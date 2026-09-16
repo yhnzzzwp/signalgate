@@ -74,6 +74,9 @@ export interface ScanRunResult {
   screened_count: number;
   provider: string | null;
   candidates_found: number;
+  candidates_without_document: number;
   articles_checked: number;
+  listing_pages_fetched: number;
+  failures: { url: string; error: string }[];
   coverage_note: string;
 }

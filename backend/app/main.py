@@ -96,11 +96,16 @@ def trigger_scan(limit: int = 3) -> dict:
                 screened_count += 1
     finally:
         run_lock.release()
+    # Tanpa angka-angka ini "0 kandidat" tidak bisa dibedakan dari "sumbernya gagal diambil".
     return {
         "screened_count": screened_count,
         "provider": provider_name,
         "candidates_found": len(report["candidates"]),
+        "candidates_without_document": sum(1 for candidate in report["candidates"]
+                                           if candidate.get("status") == "needs_document"),
         "articles_checked": report["articles_checked"],
+        "listing_pages_fetched": len(report["listing_pages"]),
+        "failures": report["failures"][:5],
         "coverage_note": report["coverage_note"],
     }
 

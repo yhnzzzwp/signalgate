@@ -2,9 +2,29 @@ import { useEffect, useState } from "react";
 import { fetchAuditLog, fetchEvents, triggerPipelineRun, triggerScanRun } from "../api/client";
 import { AuditTrail } from "../components/AuditTrail";
 import { EventCard } from "../components/EventCard";
-import type { AuditLogEntry, ScreenedEventSummary, VerdictLabel } from "../types";
+import type { AuditLogEntry, ScanRunResult, ScreenedEventSummary, VerdictLabel } from "../types";
 
 type LabelFilter = VerdictLabel | "all";
+
+// "0 kandidat" punya beberapa sebab yang sangat berbeda; pesannya harus menyebut yang mana.
+function describeScan(result: ScanRunResult): string {
+  if (result.screened_count > 0) {
+    return `${result.screened_count} kasus diriset dari ${result.candidates_found} kandidat. ${result.coverage_note}`;
+  }
+  if (result.failures.length > 0) {
+    return `Sumber gagal diambil: ${result.failures.map((f) => `${f.url} (${f.error})`).join(", ")}.`;
+  }
+  if (result.candidates_found === 0) {
+    return (
+      `Tidak ada aksi korporasi yang cocok pada ${result.listing_pages_fetched} halaman sumber ` +
+      `(${result.articles_checked} artikel diperiksa). ${result.coverage_note}`
+    );
+  }
+  return (
+    `${result.candidates_found} kandidat ditemukan, tetapi ${result.candidates_without_document} ` +
+    `di antaranya tanpa dokumen PDF sehingga tidak bisa diriset. ${result.coverage_note}`
+  );
+}
 
 export function Dashboard() {
   const [events, setEvents] = useState<ScreenedEventSummary[]>([]);
@@ -50,12 +70,7 @@ export function Dashboard() {
     try {
       const result = await triggerScanRun();
       await loadData();
-      setNotice(
-        result.screened_count > 0
-          ? `${result.screened_count} kasus diriset dari ${result.candidates_found} kandidat. ${result.coverage_note}`
-          : `Tidak ada kasus yang bisa diriset: ${result.candidates_found} kandidat ditemukan dari ` +
-            `${result.articles_checked} artikel, tetapi tidak ada yang punya dokumen PDF. ${result.coverage_note}`,
-      );
+      setNotice(describeScan(result));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scan gagal.");
     } finally {

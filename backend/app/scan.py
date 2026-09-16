@@ -16,19 +16,33 @@ from uuid import uuid4
 
 from app.config import REPO_ROOT, get_settings
 from app.llm.factory import build_provider
-from app.pipeline.hypothesize import classify
+from app.pipeline.hypothesize import (CONTROL_CHANGE_KEYWORDS, NON_PREEMPTIVE_KEYWORDS,
+                                      RIGHTS_ISSUE_KEYWORDS, classify)
 from app.pipeline.schema import ActionBucket, CandidateEvent
 from app.research.documents import DocumentSource
 
 STOP_TICKERS = {'HMET', 'PMTH', 'PMHM', 'RUPS', 'BEI', 'OJK', 'IDX', 'IHSG', 'IPO', 'BUMN', 'UMKM',
                'APBN', 'APBD', 'BANK', 'DATA', 'NEWS', 'READ', 'HTTP', 'HTML', 'SAAT', 'DARI', 'DANA', 'AKAN',
                'YANG', 'TBKS', 'USDT', 'GOTOX', 'FIFA', 'ASEAN', 'ESOP', 'MSOP'}
-KEYWORDS = ('rights issue', 'right issue', 'hmetd', 'pmthmetd', 'pmhmetd', 'private placement',
+DISCOVERY_KEYWORDS = ('rights issue', 'right issue', 'hmetd', 'pmthmetd', 'pmhmetd', 'private placement',
             'penambahan modal', 'inbreng', 'perubahan pengendali', 'perubahan kegiatan usaha',
             'perubahan bidang usaha', 'pengambilalihan', 'ambil alih', 'akuisisi', 'divestasi', 'prospektus',
             'capital increase', 'pre-emptive', 'preemptive', 'prospectus', 'acquisition', 'change of control',
-            'transaksi afiliasi', 'affiliate', 'conflict of interest', 'benturan kepentingan')
+            'transaksi afiliasi', 'affiliate', 'conflict of interest', 'benturan kepentingan',
+            # IDX menamai formulir keterbukaannya begini, dan di situlah aksi korporasi dilaporkan.
+            'fakta material', 'material fact', 'informasi material',
+            # Ragam jurnalistik Indonesia untuk pengambilalihan dan penyuntikan modal.
+            'caplok', 'mencaplok', 'suntik modal', 'suntikan modal', 'penawaran tender')
+
+# Discovery tidak boleh menyaring habis aksi yang justru diprioritaskan classifier. Daftar ini pernah
+# menyimpang dari hypothesize.py dan kehilangan 'takeover', sehingga pengumuman berbahasa Inggris IDX
+# untuk pengambilalihan tidak pernah terlihat. Bucket general_action sengaja tidak ikut: isinya luas
+# ('dividen', 'ekspansi') dan akan membanjiri antrean dengan hal yang tidak bisa diskor.
+PRIORITISED_BUCKET_KEYWORDS = (*CONTROL_CHANGE_KEYWORDS, *NON_PREEMPTIVE_KEYWORDS, *RIGHTS_ISSUE_KEYWORDS)
+KEYWORDS = tuple(dict.fromkeys((*DISCOVERY_KEYWORDS, *PRIORITISED_BUCKET_KEYWORDS)))
 TITLE_TICKER = re.compile(r'\[\s*([A-Z0-9]{4})\s*\]\s*$')
+# Tautan halaman berikutnya hanya berisi penandanya; judul berita yang diawali angka bukan paginasi.
+PAGE_LINK = re.compile(r'(?:next|berikutnya|selanjutnya)\W*|\d{1,3}', re.I)
 ATTACHMENT_NAME = re.compile(r'^\d{8}_([A-Z0-9]{4})_.+\.(?:pdf|xlsx|xls|docx|doc)$')
 IDX_HOSTS = ('idx.id', 'idx.co.id')
 
@@ -159,7 +173,7 @@ class Scanner:
                 for link in page.links:
                     if link.url not in grouped and matches(link.text + ' ' + link.url.replace('-', ' ')):
                         articles.setdefault(link.url, link.text)
-                    if re.search(r'^(next|berikutnya|selanjutnya|[2-9])\b', link.text.strip(), re.I) and urlsplit(link.url).netloc == urlsplit(url).netloc:
+                    if PAGE_LINK.fullmatch(link.text.strip()) and urlsplit(link.url).netloc == urlsplit(url).netloc:
                         listings.append(link.url)
             except Exception as error:
                 report['failures'].append({'url':url, 'error':str(error) if isinstance(error, ValueError) else type(error).__name__})

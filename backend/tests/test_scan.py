@@ -1,5 +1,5 @@
 from app.research.documents import Document, Link
-from app.scan import Scanner, announcement_groups
+from app.scan import KEYWORDS, PAGE_LINK, PRIORITISED_BUCKET_KEYWORDS, Scanner, announcement_groups, matches
 
 IDX_LISTING = "https://www.idx.id/en/news/announcement"
 NEWS_LISTING = "https://news.test/emiten"
@@ -82,3 +82,35 @@ def test_same_ticker_documents_need_a_shared_keyword(tmp_path):
     report = Scanner(source, tmp_path).discover([IDX_LISTING, NEWS_LISTING])
     news = next(entry for entry in report["candidates"] if entry["event"]["source_url"] == NEWS_ARTICLE)
     assert news["status"] == "needs_document"
+
+
+def test_discovery_never_filters_out_an_action_the_classifier_prioritises():
+    """scan.KEYWORDS drifted from hypothesize.py and lost 'takeover', so IDX's English
+    announcements for takeovers were invisible to discovery even though classify() handled them."""
+    missing = [keyword for keyword in PRIORITISED_BUCKET_KEYWORDS if keyword not in KEYWORDS]
+    assert missing == []
+
+
+def test_idx_english_takeover_announcement_is_discovered():
+    title = 'Negotiation of the Takeover Plan of PT Idea Indonesia Akademi Tbk [ IDEA ]'
+    attachment = '20260916_IDEA_Laporan Informasi dan Fakta Material_32148872_lamp1.pdf'
+    assert matches(f'{title} {attachment}')
+
+
+def test_indonesian_newsroom_verbs_are_discovered():
+    assert matches('Nawasena Caplok 66,58 Persen, Saham IDEA Langsung Meroket')
+    assert matches('Cimory Suntik Modal Rp125 Miliar ke Anak Usaha')
+
+
+def test_a_headline_starting_with_a_digit_is_not_a_pagination_link():
+    """It used to be: '3 Saham Dipantau BEI' burned one of the three listing-page slots."""
+    assert not PAGE_LINK.fullmatch('3 Saham Dipantau BEI: 2 Lanjut Merosot usai UMA')
+    assert PAGE_LINK.fullmatch('2') and PAGE_LINK.fullmatch('Next') and PAGE_LINK.fullmatch('Berikutnya \u00bb')
+
+
+def test_routine_filings_stay_out_of_the_queue():
+    """Most of what IDX publishes daily is noise; widening keywords must not drag it in."""
+    for title in ('Report of Circulation Number of Participation Units [ XRDN ]',
+                  'Report of Rating [ POST ]',
+                  'Advertisement Submission [ IDEA ]'):
+        assert not matches(title)

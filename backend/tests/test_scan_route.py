@@ -21,9 +21,11 @@ def outcome(status="completed", label=VerdictLabel.inconclusive, bullets=("Sinya
     )
 
 
-def report(candidates=2, articles=5):
+def report(candidates=2, articles=5, failures=(), pages=2, status="pending_pdf_review"):
     return {"run_id": "run123", "coverage": "partial_configured_sources", "articles_checked": articles,
-            "announcements_matched": 1, "failures": [], "candidates": [{}] * candidates,
+            "announcements_matched": 1, "failures": list(failures),
+            "listing_pages": [{"url": f"https://sumber.test/{n}"} for n in range(pages)],
+            "candidates": [{"status": status}] * candidates,
             # Verbatim from Scanner.discover: coverage is partial and the UI must keep saying so.
             "coverage_note": "Tidak ada temuan berarti tidak ditemukan pada sumber yang diperiksa, "
                              "bukan bukti tidak ada aksi korporasi di IDX."}
@@ -81,6 +83,18 @@ class ScanRouteTests(unittest.TestCase):
         self.assertEqual((payload["screened_count"], payload["candidates_found"]), (0, 0))
         self.assertIsNone(payload["provider"])
         self.assertIn("bukan bukti", payload["coverage_note"])
+
+    def test_a_fetch_failure_is_reported_instead_of_looking_like_an_empty_market(self):
+        """"0 kandidat" must not be how a dead source presents itself."""
+        broken = report(candidates=0, articles=0, failures=[{"url": "https://idx.test", "error": "HTTPError"}])
+        payload = self.run_scan([], discovered=broken).json()
+        self.assertEqual(payload["failures"][0]["error"], "HTTPError")
+        self.assertEqual(payload["listing_pages_fetched"], 2)
+
+    def test_candidates_without_a_document_are_counted_separately(self):
+        found = report(candidates=3, status="needs_document")
+        payload = self.run_scan([], discovered=found).json()
+        self.assertEqual((payload["candidates_found"], payload["candidates_without_document"]), (3, 3))
 
     def test_limit_is_bounded(self):
         for limit in (0, 21):
