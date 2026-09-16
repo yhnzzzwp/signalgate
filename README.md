@@ -51,6 +51,11 @@ Windows (Command Prompt atau PowerShell):
 scripts\setup.cmd --profile workstation
 ```
 
+Perintah-perintah di bawah ditulis untuk macOS/Linux. Di Windows, jalankan tiap baris terpisah
+(jangan dirangkai `&&`), aktifkan venv dengan `.venv\Scripts\Activate.ps1` di PowerShell atau
+`.venv\Scripts\activate` di cmd.exe, dan ganti `cp` dengan `copy`. `setup.py` mencetak versi yang
+sudah benar untuk OS yang sedang dipakai di akhir prosesnya.
+
 > `python3` **tidak ada di Windows** — yang ada `py` dan `python`. Mengetik `python3` di sana memicu
 > stub App Execution Alias bawaan Windows yang menjawab *"Python was not found; run without arguments
 > to install from the Microsoft Store"*. Itu pesan Windows, bukan error repo ini. `setup.cmd`
@@ -98,9 +103,14 @@ kamu tulis sendiri di `.env` selalu mengalahkan profil.
 | `laptop` (default) | `qwen2.5:7b` | `qwen3:4b` | Mac / GPU kecil |
 | `workstation` | `qwen2.5:14b` | `glm4:9b` lalu `gemma3:12b` | GPU 16 GB |
 
-```bash
-ollama pull qwen2.5:14b && ollama pull glm4:9b && ollama pull gemma3:12b
 ```
+ollama pull qwen2.5:14b
+ollama pull glm4:9b
+ollama pull gemma3:12b
+```
+
+Satu perintah per baris: Windows PowerShell 5.1 menolak `&&` dengan
+*"The token '&&' is not a valid statement separator in this version"*.
 
 Analis workstation sengaja sekeluarga dengan yang di laptop: prompt ekstraksi dan schema JSON-nya
 sudah disetel untuk Qwen, jadi ganti ukuran lebih aman daripada ganti keluarga model.

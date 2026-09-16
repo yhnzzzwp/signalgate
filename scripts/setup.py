@@ -167,23 +167,30 @@ def step_tests(skip: bool) -> None:
 
 
 def report(profile: str, models: list[str]) -> None:
+    # Windows PowerShell 5.1 rejects `&&` ("not a valid statement separator"), and cmd.exe rejects
+    # PowerShell syntax. One command per line is the only form both shells accept, so Windows never
+    # gets a chained command here.
     windows = os.name == "nt"
-    activate = ".venv\\Scripts\\activate" if windows else "source .venv/bin/activate"
+    activate = ".venv\\Scripts\\Activate.ps1" if windows else "source .venv/bin/activate"
     copy_env = "copy .env.example .env" if windows else "cp .env.example .env"
+    join = "\n    " if windows else " && "
+    shell_note = ("\nDi PowerShell aktifkan venv dengan Activate.ps1 seperti di atas; di cmd.exe pakai\n"
+                  ".venv\\Scripts\\activate. Kalau prompt sudah diawali (.venv), venv-nya sudah aktif\n"
+                  "dan dua baris pertama tidak perlu diulang.\n") if windows else ""
     print("\n" + "=" * 72)
     say(OK, f"Siap. Profil {profile}" + (f", model: {' -> '.join(models)}" if models else ""))
     print("=" * 72)
     print(f"""
 Uji tanpa memakai satu pun kredit Sectors:
 
-    cd backend && {activate}
+    cd backend{join}{activate}
     python -m app.scrapling_check --limit 1
 
 Menjalankan dashboard:
 
-    cd backend && {activate} && uvicorn app.main:app --reload
-    cd frontend && npm install && {copy_env} && npm run dev
-
+    cd backend{join}{activate}{join}uvicorn app.main:app --reload
+    cd frontend{join}npm install{join}{copy_env}{join}npm run dev
+{shell_note}
 Kalau nanti mau memakai data Sectors, isi SECTORS_API_KEY di backend/.env lalu ubah
 SECTORS_API_ENABLED menjadi true. Sebelum itu, /pipeline/run memang menolak jalan; itu disengaja.
 """)

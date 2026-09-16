@@ -97,15 +97,27 @@ class WindowsCompatibilityTests(unittest.TestCase):
         with patch.object(os, "name", "posix"):
             self.assertEqual(self.setup.venv_python().parts[-2:], ("bin", "python"))
 
-    def test_closing_instructions_use_windows_commands_on_windows(self):
+    def rendered(self, name: str) -> str:
         buffer = io.StringIO()
-        with patch.object(os, "name", "nt"), redirect_stdout(buffer):
+        with patch.object(os, "name", name), redirect_stdout(buffer):
             self.setup.report("workstation", ["qwen2.5:14b"])
-        printed = buffer.getvalue()
-        self.assertIn(".venv\\Scripts\\activate", printed)
+        return buffer.getvalue()
+
+    def test_closing_instructions_use_windows_commands_on_windows(self):
+        printed = self.rendered("nt")
+        self.assertIn(".venv\\Scripts\\Activate.ps1", printed)
         self.assertIn("copy .env.example .env", printed)
         self.assertNotIn("source .venv", printed)
         self.assertNotIn("cp .env.example", printed)
+
+    def test_windows_instructions_never_chain_with_double_ampersand(self):
+        """Windows PowerShell 5.1: "The token '&&' is not a valid statement separator"."""
+        self.assertNotIn("&&", self.rendered("nt"))
+
+    def test_posix_instructions_still_chain(self):
+        printed = self.rendered("posix")
+        self.assertIn("source .venv/bin/activate", printed)
+        self.assertIn("&&", printed)
 
     def test_the_windows_wrapper_never_invokes_python3(self):
         """`python3` does not exist on Windows; it only triggers the Microsoft Store alias stub."""
