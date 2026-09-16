@@ -16,8 +16,10 @@ PROFILES: dict[Profile, dict[str, object]] = {
     "workstation": {
         # Same family as the laptop analyst, so the extraction prompt and JSON schema behave the same.
         "ollama_model": "qwen2.5:14b",
-        "ollama_validator_model": "qwen3:4b",
-        "ollama_keep_alive": "30m",
+        # Three vendors, read in rotation with one model resident at a time. Reviewers exist to
+        # disagree, and models from one family tend to make the same mistake on the same sentence.
+        # Nothing here emits reasoning traces: make_agent() only suppresses those for qwen3.
+        "ollama_reviewer_models": ["glm4:9b", "gemma3:12b"],
         "ollama_timeout_seconds": 900,
     },
 }
@@ -68,6 +70,14 @@ class Settings(BaseSettings):
         for field, value in PROFILES[self.signalgate_profile].items():
             if field not in self.model_fields_set:
                 setattr(self, field, value)
+        # build_provider() takes the reviewer path whenever reviewers exist and never looks at the
+        # validator again. Failing here is kinder than silently running a model nobody asked for.
+        if self.ollama_reviewer_models and "ollama_validator_model" in self.model_fields_set:
+            raise ValueError(
+                "OLLAMA_VALIDATOR_MODEL diabaikan saat OLLAMA_REVIEWER_MODELS terisi. Pilih salah satu: "
+                "kosongkan OLLAMA_REVIEWER_MODELS untuk memakai satu validator, atau hapus "
+                "OLLAMA_VALIDATOR_MODEL dan daftarkan model itu sebagai reviewer."
+            )
 
 
 @lru_cache

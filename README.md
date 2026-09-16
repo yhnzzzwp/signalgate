@@ -47,17 +47,48 @@ ollama pull qwen3:4b
 Ollama — jumlah event per run dan pemakaian kredit Sectors tidak ikut berubah. Setelan apa pun yang
 kamu tulis sendiri di `.env` selalu mengalahkan profil.
 
-| Profil | Analis | Validator | Untuk |
+| Profil | Analis | Pembaca pembanding | Untuk |
 |---|---|---|---|
 | `laptop` (default) | `qwen2.5:7b` | `qwen3:4b` | Mac / GPU kecil |
-| `workstation` | `qwen2.5:14b` | `qwen3:4b` | GPU 16 GB |
+| `workstation` | `qwen2.5:14b` | `glm4:9b` lalu `gemma3:12b` | GPU 16 GB |
 
 ```bash
-ollama pull qwen2.5:14b   # hanya di mesin workstation
+ollama pull qwen2.5:14b && ollama pull glm4:9b && ollama pull gemma3:12b
 ```
 
 Analis workstation sengaja sekeluarga dengan yang di laptop: prompt ekstraksi dan schema JSON-nya
 sudah disetel untuk Qwen, jadi ganti ukuran lebih aman daripada ganti keluarga model.
+
+**Rotasi pembaca pembanding.** `OLLAMA_REVIEWER_MODELS` dibaca berurutan dan
+`OLLAMA_OFFLOAD_BETWEEN_MODELS=true` mengusir tiap model setelah gilirannya
+(`POST /api/generate` dengan `keep_alive: 0`), jadi urutannya:
+
+```
+qwen2.5:14b baca → evict → glm4:9b baca → evict → gemma3:12b baca → evict
+```
+
+Hanya satu model di VRAM pada satu waktu, jadi puncak pemakaian = model terbesar (~12 GB dengan KV
+cache), bukan jumlah ketiganya. Tiga vendor berbeda dipilih dengan sengaja: pembanding ada untuk
+*tidak setuju*, dan model sekeluarga cenderung salah di kalimat yang sama.
+
+Harganya waktu, bukan VRAM: tiap giliran berarti satu muat-ulang model. Dengan
+`RESEARCH_REVIEW_ROUNDS=2` jumlah muat-ulang ikut berlipat.
+
+Dua batasan yang mengikat pilihan model:
+
+- **Jangan pakai model bermode *thinking*** (`deepseek-r1`, `glm-5.x`, `glm-4.7-flash`). `make_agent()`
+  hanya mengirim `think=False` untuk `qwen3`, sehingga jejak penalaran model lain akan merusak JSON
+  ketat yang diharapkan schema.
+- **Isi `OLLAMA_REVIEWER_MODELS` atau `OLLAMA_VALIDATOR_MODEL`, jangan keduanya.** `build_provider()`
+  selalu memilih jalur reviewer, jadi validator akan terabaikan; sekarang konfigurasi seperti itu
+  ditolak saat start dengan pesan yang menyebut apa yang harus dibetulkan.
+
+Mau `llama3.1:8b` seperti contoh di `.env.example`? Ganti satu baris:
+`OLLAMA_REVIEWER_MODELS=["glm4:9b","llama3.1:8b"]`. Saya memilih `gemma3:12b` sebagai default karena
+Gemma 3 dilatih multibahasa secara eksplisit sementara Indonesia bukan kekuatan Llama 3.1 8B — dan
+pembanding yang lemah berbahaya di sini: aturan penggabungan bersifat pesimistis (`contradicted`
+menang), jadi pembanding yang salah paham menyeret hasil ke `inconclusive`, bukan sekadar jadi
+suara minoritas.
 
 **Memakai GPU mesin lain tanpa memindahkan backend.** Di mesin ber-GPU jalankan Ollama dengan
 `OLLAMA_HOST=0.0.0.0`, lalu di laptop cukup arahkan `OLLAMA_BASE_URL=http://<ip-mesin-itu>:11434`.
