@@ -33,6 +33,38 @@ Detail lengkap, termasuk tabel bobot skor dan mode validator, di [`docs/ARCHITEC
 
 ## Menjalankan
 
+### Setup otomatis
+
+Satu perintah menyiapkan venv, dependensi, model Ollama, dan `.env` — jalankan dengan Python sistem,
+bukan dari dalam venv:
+
+```bash
+python3 scripts/setup.py --profile laptop        # Mac / GPU kecil
+python3 scripts/setup.py --profile workstation   # GPU 16 GB
+```
+
+`.env` yang dihasilkan menyetel `SECTORS_API_ENABLED=false` dan membiarkan `SECTORS_API_KEY` kosong,
+jadi **tidak ada satu pun kredit Sectors terpakai** sampai kamu sendiri mengisinya. Scrapling
+mengambil artikel lewat HTTP biasa, jadi Ollama tetap dipakai penuh dan semua bagian riset bisa diuji
+tanpa menyentuh API berbayar:
+
+```bash
+cd backend && source .venv/bin/activate
+python -m app.scrapling_check --limit 1
+```
+
+`.env` yang sudah ada tidak pernah ditimpa kecuali kamu menambahkan `--overwrite-env`. Bendera lain:
+`--skip-models`, `--skip-tests`, `--recreate-venv`.
+
+Kalau nanti siap memakai data Sectors: isi `SECTORS_API_KEY` lalu ubah `SECTORS_API_ENABLED=true`.
+Sebelum itu `/pipeline/run` memang menolak berjalan — itu disengaja, bukan bug.
+
+Skrip ini tidak menjalankan `scrapling install`. Repo memakai `Fetcher` (HTTP biasa) di
+`app/research/evidence.py`, bukan fetcher berbasis browser, jadi unduhan Camoufox/Chromium yang
+ratusan megabita itu tidak dibutuhkan.
+
+### Setup manual
+
 Butuh aplikasi [Ollama](https://ollama.com/download) (gratis, lokal — tanpa API key LLM) dan
 `SECTORS_API_KEY`. Buka aplikasi Ollama, lalu:
 
