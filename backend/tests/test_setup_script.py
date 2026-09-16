@@ -3,6 +3,7 @@ import importlib.util
 import io
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -119,6 +120,36 @@ class WindowsCompatibilityTests(unittest.TestCase):
         self.assertIn("py -3", body)
         self.assertIn("python --version", body)
         self.assertIn("python.org/downloads", body)
+
+
+class DistributionTests(unittest.TestCase):
+    """A setup script that never reaches the other machine is the same as no setup script."""
+
+    def ignored(self, path: Path) -> bool:
+        result = subprocess.run(["git", "check-ignore", "-q", str(path)], cwd=REPO_ROOT, capture_output=True)
+        return result.returncode == 0
+
+    def test_the_setup_entrypoints_are_not_gitignored(self):
+        """scripts/ is ignored wholesale; these two have to be excepted or a clone cannot run setup."""
+        for path in (SETUP_SCRIPT, SETUP_CMD):
+            self.assertTrue(path.exists(), path)
+            self.assertFalse(self.ignored(path), f"{path.name} tidak akan ikut ter-commit")
+
+    def test_the_rest_of_scripts_stays_local(self):
+        other = [path for path in (REPO_ROOT / "scripts").iterdir()
+                 if path.is_file() and path not in {SETUP_SCRIPT, SETUP_CMD}]
+        for path in other:
+            self.assertTrue(self.ignored(path), f"{path.name} tak sengaja ikut terbuka")
+
+    def test_the_batch_wrapper_keeps_crlf_line_endings(self):
+        """cmd.exe can mis-parse a batch file saved with bare LF."""
+        data = SETUP_CMD.read_bytes()
+        self.assertEqual(data.count(b"\n") - data.count(b"\r\n"), 0)
+
+    def test_gitattributes_pins_batch_line_endings(self):
+        """Without this, git checkout on another machine can normalise the CRLF straight back to LF."""
+        attributes = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
+        self.assertIn("*.cmd text eol=crlf", attributes)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,11 @@ dist/
 .vite/
 
 .DS_Store
-scripts/
+# Only the setup entrypoints are shared; the rest of scripts/ stays local.
+# Must be `scripts/*`, not `scripts/`: git cannot re-include a file whose parent dir is excluded.
+scripts/*
+!scripts/setup.py
+!scripts/setup.cmd
 cases/
 data/library/
 data/scans/
