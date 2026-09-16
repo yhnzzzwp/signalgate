@@ -1,12 +1,17 @@
 """The generated .env is what a new machine runs on, so its safety properties are worth a test."""
 import importlib.util
+import io
+import os
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup.py"
+SETUP_CMD = REPO_ROOT / "scripts" / "setup.cmd"
 
 
 def load_setup(backend: Path):
@@ -70,6 +75,50 @@ class SetupScriptTests(unittest.TestCase):
         example = (self.tmp / ".env.example").read_text(encoding="utf-8")
         for key in ("SECTORS_API_KEY", "SECTORS_API_ENABLED", "SIGNALGATE_PROFILE"):
             self.assertIn(f"{key}=", example)
+
+
+class WindowsCompatibilityTests(unittest.TestCase):
+    """Nobody on this project develops on Windows, so the Windows paths need a test, not a hope."""
+
+    def setUp(self):
+        self.setup = load_setup(REPO_ROOT / "backend")
+
+    def test_the_script_is_pure_ascii(self):
+        """A legacy Windows console is cp1252: one stray em dash aborts the run with UnicodeEncodeError."""
+        offenders = [(no, line.strip()) for no, line in
+                     enumerate(SETUP_SCRIPT.read_text(encoding="utf-8").splitlines(), 1)
+                     if any(ord(char) > 127 for char in line)]
+        self.assertEqual(offenders, [])
+
+    def test_the_venv_interpreter_lives_under_scripts_on_windows(self):
+        with patch.object(os, "name", "nt"):
+            self.assertEqual(self.setup.venv_python().parts[-2:], ("Scripts", "python.exe"))
+        with patch.object(os, "name", "posix"):
+            self.assertEqual(self.setup.venv_python().parts[-2:], ("bin", "python"))
+
+    def test_closing_instructions_use_windows_commands_on_windows(self):
+        buffer = io.StringIO()
+        with patch.object(os, "name", "nt"), redirect_stdout(buffer):
+            self.setup.report("workstation", ["qwen2.5:14b"])
+        printed = buffer.getvalue()
+        self.assertIn(".venv\\Scripts\\activate", printed)
+        self.assertIn("copy .env.example .env", printed)
+        self.assertNotIn("source .venv", printed)
+        self.assertNotIn("cp .env.example", printed)
+
+    def test_the_windows_wrapper_never_invokes_python3(self):
+        """`python3` does not exist on Windows; it only triggers the Microsoft Store alias stub."""
+        body = SETUP_CMD.read_text(encoding="utf-8")
+        invocations = [line.strip() for line in body.splitlines()
+                       if line.strip().startswith(("py ", "python ", "python3 "))]
+        self.assertTrue(invocations)
+        self.assertFalse([line for line in invocations if line.startswith("python3 ")], invocations)
+
+    def test_the_windows_wrapper_tries_both_launchers_before_giving_up(self):
+        body = SETUP_CMD.read_text(encoding="utf-8")
+        self.assertIn("py -3", body)
+        self.assertIn("python --version", body)
+        self.assertIn("python.org/downloads", body)
 
 
 if __name__ == "__main__":

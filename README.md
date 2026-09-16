@@ -38,10 +38,24 @@ Detail lengkap, termasuk tabel bobot skor dan mode validator, di [`docs/ARCHITEC
 Satu perintah menyiapkan venv, dependensi, model Ollama, dan `.env` — jalankan dengan Python sistem,
 bukan dari dalam venv:
 
+macOS / Linux:
+
 ```bash
 python3 scripts/setup.py --profile laptop        # Mac / GPU kecil
 python3 scripts/setup.py --profile workstation   # GPU 16 GB
 ```
+
+Windows (Command Prompt atau PowerShell):
+
+```bat
+scripts\setup.cmd --profile workstation
+```
+
+> `python3` **tidak ada di Windows** — yang ada `py` dan `python`. Mengetik `python3` di sana memicu
+> stub App Execution Alias bawaan Windows yang menjawab *"Python was not found; run without arguments
+> to install from the Microsoft Store"*. Itu pesan Windows, bukan error repo ini. `setup.cmd`
+> memilihkan interpreter yang benar, dan kalau Python memang belum terpasang ia memberi tahu persis
+> apa yang harus dilakukan.
 
 `.env` yang dihasilkan menyetel `SECTORS_API_ENABLED=false` dan membiarkan `SECTORS_API_KEY` kosong,
 jadi **tidak ada satu pun kredit Sectors terpakai** sampai kamu sendiri mengisinya. Scrapling
@@ -54,7 +68,7 @@ python -m app.scrapling_check --limit 1
 ```
 
 `.env` yang sudah ada tidak pernah ditimpa kecuali kamu menambahkan `--overwrite-env`. Bendera lain:
-`--skip-models`, `--skip-tests`, `--recreate-venv`.
+`--skip-models`, `--skip-tests`, `--recreate-venv`. Semua bendera berlaku sama di `setup.cmd`.
 
 Kalau nanti siap memakai data Sectors: isi `SECTORS_API_KEY` lalu ubah `SECTORS_API_ENABLED=true`.
 Sebelum itu `/pipeline/run` memang menolak berjalan — itu disengaja, bukan bug.
