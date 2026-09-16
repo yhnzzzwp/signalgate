@@ -15,6 +15,8 @@ from app.pipeline.presentation import screen_outcome
 from app.pipeline.orchestrator import run_pipeline
 from app.pipeline.schema import ActionBucket, CandidateEvent
 from app.pipeline.sense import FreeFloatLookup, snapshot_company
+from app.research.documents import DocumentSource
+from app.scan import Scanner, research_queue_items
 from app.sectors.client import SectorsClient, SectorsAPIError
 
 app = FastAPI(title="SignalGate", version="0.3.0")
@@ -56,6 +58,51 @@ def trigger_pipeline() -> dict:
             provider.close()
         run_lock.release()
     return {"screened_count": len(results), "provider": provider.name}
+
+
+@app.post("/scan/run")
+def trigger_scan(limit: int = 3) -> dict:
+    """Jalur Scrapling: temukan kandidat dari halaman publik lalu riset PDF-nya. Nol kredit Sectors.
+
+    Sengaja tidak memanggil require_sectors_key(): inilah jalur yang tetap hidup saat mode hemat.
+    """
+    if not 1 <= limit <= 20:
+        raise HTTPException(422, "limit harus 1..20.")
+    if not run_lock.acquire(blocking=False):
+        raise HTTPException(409, "Riset masih berjalan.")
+    try:
+        source = DocumentSource(settings.research_library_dir, settings.source_cache_mode,
+                                settings.source_cache_ttl_seconds, settings.research_pdf_max_pages)
+        scanner = Scanner(source, settings.scan_directory, {},
+                          settings.scan_max_articles, settings.scan_max_listing_pages)
+        report = scanner.discover(settings.scan_sources)
+        provider_name, screened_count = None, 0
+        with session_factory() as session:
+            record_audit(session, stage="scan", ticker="*", detail={
+                "run_id": report["run_id"], "coverage": report["coverage"],
+                "candidates": len(report["candidates"]), "articles_checked": report["articles_checked"],
+                "announcements_matched": report["announcements_matched"], "failures": report["failures"][:10],
+            })
+            # Same publication boundary as /pipeline/run: nothing reaches the dashboard ungated.
+            for event, outcome, _item in research_queue_items(settings, settings.scan_directory, limit):
+                provider_name = outcome.verdict.provider
+                screened = screen_outcome(event, None, outcome)
+                record_audit(session, stage="research", ticker=event.ticker,
+                             detail=outcome.model_dump(mode="json", exclude={"verdict", "evidence"}))
+                record_audit(session, stage="gate", ticker=event.ticker,
+                             detail={"status": screened.gate.status.value,
+                                     "rejected_terms": screened.gate.rejected_terms})
+                persist_screened_event(session, screened)
+                screened_count += 1
+    finally:
+        run_lock.release()
+    return {
+        "screened_count": screened_count,
+        "provider": provider_name,
+        "candidates_found": len(report["candidates"]),
+        "articles_checked": report["articles_checked"],
+        "coverage_note": report["coverage_note"],
+    }
 
 
 class ResearchRequest(BaseModel):

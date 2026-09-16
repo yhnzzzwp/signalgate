@@ -66,6 +66,30 @@ body {
   cursor: progress;
 }
 
+.dashboard__actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Jalur tanpa kredit API adalah default yang aman, jadi tampil sebagai aksi sekunder yang jelas. */
+.dashboard__actions .dashboard__run-button:first-child {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.dashboard__notice {
+  background: rgba(120, 160, 255, 0.1);
+  border: 1px solid var(--accent);
+  color: var(--text-muted);
+  padding: 10px 14px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .dashboard__error {
   background: rgba(255, 93, 93, 0.12);
   border: 1px solid var(--red-flag);

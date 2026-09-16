@@ -69,3 +69,11 @@ export interface AuditLogEntry {
   detail: Record<string, unknown>;
   created_at: string;
 }
+
+export interface ScanRunResult {
+  screened_count: number;
+  provider: string | null;
+  candidates_found: number;
+  articles_checked: number;
+  coverage_note: string;
+}

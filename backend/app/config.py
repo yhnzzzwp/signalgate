@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     scan_max_listing_pages: int = Field(default=3, ge=1, le=50)
     research_source_urls: list[str] = Field(default_factory=list)
     research_cases_dir: Path = REPO_ROOT / "cases"
+    scan_directory: Path = REPO_ROOT / "data" / "scans"
     signalgate_db_path: str = "./signalgate.db"
 
     def model_post_init(self, __context) -> None:

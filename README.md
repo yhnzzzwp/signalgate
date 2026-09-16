@@ -194,7 +194,19 @@ cp .env.example .env
 npm run dev
 ```
 
-Buka `http://localhost:5173`, klik "Jalankan pipeline".
+Buka `http://localhost:5173`. Ada dua tombol:
+
+| Tombol | Sumber kandidat | Kredit Sectors |
+|---|---|---|
+| **Scan Scrapling (tanpa API)** | Halaman publik di `SCAN_SOURCES` (pengumuman IDX, emitennews) | **0** |
+| **Jalankan pipeline (Sectors)** | Endpoint `news` Sectors + `company/report` | ~34–36 per run |
+
+Tombol Scrapling memanggil `POST /scan/run`, yang **tidak** memeriksa `SECTORS_API_KEY` — itulah jalur
+yang tetap hidup saat `SECTORS_API_ENABLED=false`. Hasilnya melewati Compliance Gate yang sama dan
+tersimpan ke database, jadi dashboard dan audit trail terisi tanpa memakai kredit sama sekali.
+
+Kandidat hanya diriset kalau punya tautan PDF; yang tidak punya dilewati, dan jumlahnya dilaporkan
+di notifikasi. Cakupannya selalu parsial — hanya sumber yang kamu daftarkan, bukan seluruh IDX.
 
 Uji pengembangan hanya dengan artikel Scrapling, tanpa memanggil Sectors API:
 

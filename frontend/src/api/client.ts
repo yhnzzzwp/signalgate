@@ -1,4 +1,4 @@
-import type { AuditLogEntry, ScreenedEventSummary } from "../types";
+import type { AuditLogEntry, ScanRunResult, ScreenedEventSummary } from "../types";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -20,4 +20,9 @@ export function fetchAuditLog(): Promise<AuditLogEntry[]> {
 
 export function triggerPipelineRun(): Promise<{ screened_count: number; provider: string }> {
   return request("/pipeline/run", { method: "POST" });
+}
+
+// Jalur Scrapling: tidak memakai kredit Sectors, jadi tetap hidup saat mode hemat aktif.
+export function triggerScanRun(limit = 3): Promise<ScanRunResult> {
+  return request(`/scan/run?limit=${limit}`, { method: "POST" });
 }

@@ -201,13 +201,23 @@ class Scanner:
         return report
 
 
-def research_queue(settings, directory, limit, documents):
+def document_map(documents):
     mappings = {}
     for value in documents:
         ticker, separator, url = value.partition('=')
         if not separator or not url.startswith(('https://', 'http://')):
             raise ValueError('--document harus TICKER=https://dokumen.pdf')
         mappings.setdefault(ticker.upper(), []).append(url)
+    return mappings
+
+
+def research_queue_items(settings, directory, limit, documents=()):
+    """Yield (event, outcome, item) per kandidat antrean. Nol permintaan Sectors.
+
+    Dipakai CLI maupun endpoint /scan/run, supaya keduanya meriset dengan cara yang sama persis.
+    Pemanggil wajib menghabiskan generator ini agar engine ditutup tepat waktu.
+    """
+    mappings = document_map(documents)
     engine = build_provider(settings)
     try:
         processed = 0
@@ -226,11 +236,18 @@ def research_queue(settings, directory, limit, documents):
             item.update(status=outcome.status, case_id=outcome.case_id, label=outcome.verdict.label.value,
                         document_status=outcome.document_status, processed_at=datetime.now(timezone.utc).isoformat())
             write_json(path, item)
-            print(json.dumps({key:item.get(key) for key in ('id','status','case_id','label','document_status')}), flush=True)
             processed += 1
-        return processed
+            yield event, outcome, item
     finally:
         engine.close()
+
+
+def research_queue(settings, directory, limit, documents):
+    processed = 0
+    for _event, _outcome, item in research_queue_items(settings, directory, limit, documents):
+        print(json.dumps({key:item.get(key) for key in ('id','status','case_id','label','document_status')}), flush=True)
+        processed += 1
+    return processed
 
 
 def main():

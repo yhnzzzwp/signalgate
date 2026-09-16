@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchAuditLog, fetchEvents, triggerPipelineRun } from "../api/client";
+import { fetchAuditLog, fetchEvents, triggerPipelineRun, triggerScanRun } from "../api/client";
 import { AuditTrail } from "../components/AuditTrail";
 import { EventCard } from "../components/EventCard";
 import type { AuditLogEntry, ScreenedEventSummary, VerdictLabel } from "../types";
@@ -11,8 +11,9 @@ export function Dashboard() {
   const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
   const [filter, setFilter] = useState<LabelFilter>("all");
   const [showAudit, setShowAudit] = useState(false);
-  const [isRunning, setIsRunning] = useState(false);
+  const [running, setRunning] = useState<"pipeline" | "scan" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   async function loadData() {
     try {
@@ -30,14 +31,35 @@ export function Dashboard() {
   }, []);
 
   async function handleRunPipeline() {
-    setIsRunning(true);
+    setRunning("pipeline");
+    setNotice(null);
     try {
       await triggerPipelineRun();
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Pipeline run gagal.");
     } finally {
-      setIsRunning(false);
+      setRunning(null);
+    }
+  }
+
+  async function handleRunScan() {
+    setRunning("scan");
+    setNotice(null);
+    setError(null);
+    try {
+      const result = await triggerScanRun();
+      await loadData();
+      setNotice(
+        result.screened_count > 0
+          ? `${result.screened_count} kasus diriset dari ${result.candidates_found} kandidat. ${result.coverage_note}`
+          : `Tidak ada kasus yang bisa diriset: ${result.candidates_found} kandidat ditemukan dari ` +
+            `${result.articles_checked} artikel, tetapi tidak ada yang punya dokumen PDF. ${result.coverage_note}`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Scan gagal.");
+    } finally {
+      setRunning(null);
     }
   }
 
@@ -56,12 +78,18 @@ export function Dashboard() {
             Insight dari Sectors API dan sumber web, dianalisis dan divalidasi model lokal — bukan rekomendasi beli/jual.
           </p>
         </div>
-        <button className="dashboard__run-button" onClick={handleRunPipeline} disabled={isRunning}>
-          {isRunning ? "Menjalankan pipeline…" : "Jalankan pipeline"}
-        </button>
+        <div className="dashboard__actions">
+          <button className="dashboard__run-button" onClick={handleRunScan} disabled={running !== null}>
+            {running === "scan" ? "Memindai sumber publik…" : "Scan Scrapling (tanpa API)"}
+          </button>
+          <button className="dashboard__run-button" onClick={handleRunPipeline} disabled={running !== null}>
+            {running === "pipeline" ? "Menjalankan pipeline…" : "Jalankan pipeline (Sectors)"}
+          </button>
+        </div>
       </header>
 
       {error && <div className="dashboard__error">{error}</div>}
+      {notice && <div className="dashboard__notice">{notice}</div>}
 
       <div className="dashboard__filters">
         {(["all", "structural_red_flag", "growth_catalyst", "inconclusive"] as LabelFilter[]).map((option) => (
@@ -83,7 +111,11 @@ export function Dashboard() {
         <AuditTrail entries={auditEntries} />
       ) : (
         <div className="dashboard__grid">
-          {filteredEvents.length === 0 && <p className="dashboard__empty">Belum ada event — jalankan pipeline dulu.</p>}
+          {filteredEvents.length === 0 && (
+            <p className="dashboard__empty">
+              Belum ada event — jalankan &ldquo;Scan Scrapling&rdquo; untuk memulai tanpa memakai kredit API.
+            </p>
+          )}
           {filteredEvents.map((event) => (
             <EventCard key={event.id} event={event} />
           ))}

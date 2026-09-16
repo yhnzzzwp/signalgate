@@ -36,6 +36,12 @@ menolak berjalan tanpa `SECTORS_API_KEY`; hasil tidak dapat selesai jika data pe
 
 Scrapling (HTML publik statis, patuh robots.txt, URL non-publik ditolak) mengambil artikel sumber.
 
+**Jalur tanpa Sectors.** `app/scan.py` menemukan kandidat langsung dari halaman publik yang didaftarkan
+di `SCAN_SOURCES`, lalu meriset PDF-nya. Nol permintaan Sectors. `POST /scan/run` menjalankan jalur ini
+dan menyimpan hasilnya ke database lewat `screen_outcome()` yang sama dengan `/pipeline/run`, sehingga
+tidak ada pintu samping yang melewati Compliance Gate. CLI (`python -m app.scan`) dan endpoint memakai
+`research_queue_items()` yang sama, jadi keduanya tidak bisa menyimpang satu sama lain.
+
 ## Pipeline
 
 | Tahap | Modul | Fungsi |
