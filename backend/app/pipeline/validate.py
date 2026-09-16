@@ -7,10 +7,6 @@ PBV_CLAIM_MARKERS = ["pbv", "p/b", "price to book", "price-to-book"]
 CONTROL_CLAIM_MARKERS = ["pengendali", "control", "kendali"]
 
 
-class ValidationIssue(str):
-    pass
-
-
 def validate_verdict(event: CandidateEvent, snapshot: CompanySnapshot | None, verdict: Verdict) -> list[str]:
     issues: list[str] = []
     combined_text = " ".join(verdict.rationale_bullets + verdict.red_flag_signals).lower()

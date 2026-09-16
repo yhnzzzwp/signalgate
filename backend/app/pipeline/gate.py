@@ -38,7 +38,7 @@ def sanitize_for_display(verdict: Verdict, gate: GateResult) -> Verdict:
         return verdict
     return verdict.model_copy(
         update={
-            "rationale_bullets": ["Rationale disembunyikan — mengandung istilah yang menyerupai rekomendasi transaksi, butuh review manual."],
+            "rationale_bullets": ["Hasil memerlukan pemeriksaan manual; bukti, validasi, atau bahasa analisis belum lolos pemeriksaan."],
             "red_flag_signals": [],
             "growth_signals": [],
         }

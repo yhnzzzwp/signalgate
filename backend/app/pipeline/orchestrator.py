@@ -2,45 +2,50 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.llm.base import LLMProvider
 from app.pipeline.audit import persist_screened_event, record_audit
-from app.pipeline.gate import apply_gate, sanitize_for_display
-from app.pipeline.reason import reason_about_event
-from app.pipeline.schema import ScreenedEvent
-from app.pipeline.sense import collect_candidate_events, snapshot_company
-from app.pipeline.validate import validate_verdict
+from app.pipeline.schema import ActionBucket, CandidateEvent, ScreenedEvent
+from app.pipeline.presentation import screen_outcome
+from app.pipeline.sense import FreeFloatLookup, collect_candidate_events, snapshot_company
 from app.sectors.client import SectorsClient
 
+BUCKET_PRIORITY = {
+    ActionBucket.control_change: 0,
+    ActionBucket.non_preemptive_capital: 1,
+    ActionBucket.rights_issue: 2,
+    ActionBucket.general_action: 3,
+}
 
-def run_pipeline(client: SectorsClient, provider: LLMProvider, session: Session) -> list[ScreenedEvent]:
+
+def pick_events(events: list[CandidateEvent], max_events: int) -> list[CandidateEvent]:
+    first_per_ticker: dict[str, CandidateEvent] = {}
+    for event in sorted(events, key=lambda item: BUCKET_PRIORITY[item.bucket]):
+        first_per_ticker.setdefault(event.ticker, event)
+    return list(first_per_ticker.values())[:max_events]
+
+
+def run_pipeline(client: SectorsClient, provider, session: Session, max_events: int = 3) -> list[ScreenedEvent]:
     events = collect_candidate_events(client)
-    record_audit(session, stage="sense", ticker="*", detail={"event_count": len(events)})
+    selected = pick_events(events, max_events)
+    record_audit(session, stage="sense", ticker="*",
+                 detail={"event_count": len(events), "selected": [event.ticker for event in selected]})
 
     results: list[ScreenedEvent] = []
-    seen_tickers: dict[str, ScreenedEvent] = {}
-
-    for event in events:
-        if event.ticker in seen_tickers:
-            continue
-
-        snapshot = snapshot_company(client, event.ticker)
-        verdict = reason_about_event(provider, event, snapshot)
-        issues = validate_verdict(event, snapshot, verdict)
+    float_lookup = FreeFloatLookup(client)  # one free-float call per subsector, reused across events
+    for event in selected:
+        snapshot = snapshot_company(client, event.ticker, event.sub_sector, float_lookup)
+        outcome = provider.research(event, snapshot, report=client.last_report, require_sectors=True)
+        record_audit(session, stage="research", ticker=event.ticker,
+                     detail=outcome.model_dump(mode="json", exclude={"verdict", "evidence"}))
+        screened = screen_outcome(event, snapshot, outcome)
+        issues = screened.numeric_issues
         if issues:
             record_audit(session, stage="validate", ticker=event.ticker, detail={"issues": issues})
 
-        gate = apply_gate(verdict)
-        sanitized_verdict = sanitize_for_display(verdict, gate)
-        record_audit(
-            session,
-            stage="gate",
-            ticker=event.ticker,
-            detail={"status": gate.status.value, "rejected_terms": gate.rejected_terms},
-        )
+        gate = screened.gate
+        record_audit(session, stage="gate", ticker=event.ticker,
+                     detail={"status": gate.status.value, "rejected_terms": gate.rejected_terms})
 
-        screened = ScreenedEvent(event=event, snapshot=snapshot, verdict=sanitized_verdict, gate=gate)
         persist_screened_event(session, screened)
-        seen_tickers[event.ticker] = screened
         results.append(screened)
 
     return results

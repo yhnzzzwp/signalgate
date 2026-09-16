@@ -45,7 +45,21 @@ export function EventCard({ event }: { event: ScreenedEventSummary }) {
         </ul>
       )}
 
-      <a className="event-card__source" href={event.source_url} target="_blank" rel="noreferrer">
+      {detail.research && (
+        <details>
+          <summary>Riset: {detail.research.status} · {detail.research.extraction_attempts} ekstraksi</summary>
+          <ul>
+            {detail.research.evidence.filter((source) => /^https?:\/\//.test(source.url)).map((source) => (
+              <li key={source.id}>
+                <a href={source.url} target="_blank" rel="noreferrer">[{source.id}] {source.title}</a>
+              </li>
+            ))}
+          </ul>
+          {detail.research.issues.length > 0 && <p>Masih ada {detail.research.issues.length} hal yang perlu diperiksa.</p>}
+        </details>
+      )}
+
+      <a className="event-card__source" href={/^https?:\/\//.test(event.source_url) ? event.source_url : undefined} target="_blank" rel="noreferrer">
         Sumber →
       </a>
     </article>

@@ -18,6 +18,13 @@ export interface ScreenedEventSummary {
 }
 
 export interface ScreenedEventDetail {
+  research?: {
+    status: string;
+    extraction_attempts: number;
+    case_id: string | null;
+    issues: string[];
+    evidence: { id: string; kind: string; url: string; title: string; retrieved_at: string }[];
+  } | null;
   event: {
     ticker: string;
     headline: string;

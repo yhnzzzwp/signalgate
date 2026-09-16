@@ -34,6 +34,12 @@ class CompanySnapshot(BaseModel):
     pe_ratio: float | None = None
     intrinsic_value: float | None = None
     last_close_price: float | None = None
+    # Free float as a decimal (0.0749 = 7,49%), plus where it ranks inside its own subsector so the
+    # signal can cite a comparison the reader can reproduce instead of an external index threshold.
+    free_float: float | None = None
+    free_float_rank: int | None = None
+    free_float_universe: int | None = None
+    quarterly_financials: list[dict] = Field(default_factory=list)
 
 
 class VerdictLabel(StrEnum):
@@ -65,5 +71,7 @@ class ScreenedEvent(BaseModel):
     event: CandidateEvent
     snapshot: CompanySnapshot | None
     verdict: Verdict
+    numeric_issues: list[str] = Field(default_factory=list)
+    research: dict | None = None
     gate: GateResult
     watch_status: str = "active"

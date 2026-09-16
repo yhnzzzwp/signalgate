@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Sequence
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+# company/report bills one credit per section, so only the sections the pipeline actually reads are
+# requested: summarize_company_report() uses overview, valuation, ownership, management and financials.
+# Asking for all eight (the API default) would bill 8 credits and hand the model data nobody reads.
+REPORT_SECTIONS = ("overview", "valuation", "ownership", "management", "financials")
+ALL_REPORT_SECTIONS = ("dividend", "financials", "future", "management", "overview", "ownership", "peers", "valuation")
 
 
 class SectorsAPIError(RuntimeError):
@@ -21,6 +28,7 @@ class SectorsClient:
             raise ValueError("SECTORS_API_KEY environment variable is required")
         self.timeout = timeout
         self.base_url = "https://api.sectors.app/v2"
+        self.last_report = None
 
     def get(self, path: str, **params: Any) -> Any:
         clean_path = path.strip("/")
@@ -50,8 +58,26 @@ class SectorsClient:
     def list_subsectors(self) -> list[dict[str, str]]:
         return self.get("subsectors")
 
-    def company_report(self, ticker: str) -> dict[str, Any]:
-        return self.get(f"company/report/{ticker}")
+    def company_report(self, ticker: str, sections: Sequence[str] | None = None) -> dict[str, Any]:
+        self.last_report = None
+        report = self.get(f"company/report/{ticker}", sections=",".join(sections or REPORT_SECTIONS))
+        self.last_report = report
+        return report
+
+    def free_float(
+        self,
+        sector: str | None = None,
+        sub_sector: str | None = None,
+        industry: str | None = None,
+        sub_industry: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Public ownership share per company. Costs 1 credit per 100 companies returned."""
+        return self.get("free-float", sector=sector, sub_sector=sub_sector,
+                        industry=industry, sub_industry=sub_industry)
+
+    def quarterly_financials(self, ticker: str, n_quarters: int = 4) -> list[dict[str, Any]]:
+        """Full quarterly statements, newest first. Costs 1 credit per quarter returned."""
+        return self.get(f"financials/quarterly/{ticker}", n_quarters=n_quarters)
 
     def daily(self, ticker: str, start: str | None = None, end: str | None = None) -> list[dict[str, Any]]:
         return self.get(f"daily/{ticker}", start=start, end=end)

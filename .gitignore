@@ -12,3 +12,6 @@ dist/
 
 .DS_Store
 scripts/
+cases/
+data/library/
+data/scans/

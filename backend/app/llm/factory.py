@@ -1,21 +1,28 @@
-from __future__ import annotations
-
 from app.config import Settings
-from app.llm.base import LLMProvider
-from app.llm.mock_provider import MockProvider
+from app.research.agents import OllamaAgent
+from app.research.engine import ResearchEngine
 
 
-def build_provider(settings: Settings) -> LLMProvider:
-    if settings.anthropic_api_key:
-        from app.llm.claude_provider import ClaudeProvider
+def make_agent(settings: Settings, model_name: str) -> OllamaAgent:
+    return OllamaAgent(
+        settings.ollama_base_url,
+        model_name,
+        settings.ollama_num_ctx,
+        settings.ollama_timeout_seconds,
+        think=False if model_name.startswith("qwen3") else None,
+        keep_alive=settings.ollama_keep_alive,
+    )
 
-        return ClaudeProvider(api_key=settings.anthropic_api_key)
-    if settings.openai_api_key:
-        from app.llm.openai_provider import OpenAIProvider
 
-        return OpenAIProvider(api_key=settings.openai_api_key)
-    if settings.gemini_api_key:
-        from app.llm.gemini_provider import GeminiProvider
-
-        return GeminiProvider(api_key=settings.gemini_api_key)
-    return MockProvider()
+def build_provider(settings: Settings) -> ResearchEngine:
+    if settings.llm_backend != "ollama":
+        return ResearchEngine(settings)
+    analyst = make_agent(settings, settings.ollama_model)
+    if settings.ollama_reviewer_models:
+        reviewers = [analyst if name == settings.ollama_model else make_agent(settings, name)
+                     for name in dict.fromkeys(settings.ollama_reviewer_models)]
+        return ResearchEngine(settings, model=analyst, reviewers=reviewers)
+    validator = analyst
+    if settings.ollama_validator_model and settings.ollama_validator_model != settings.ollama_model:
+        validator = make_agent(settings, settings.ollama_validator_model)
+    return ResearchEngine(settings, model=analyst, validator=validator)

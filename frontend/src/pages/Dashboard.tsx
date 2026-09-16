@@ -53,7 +53,7 @@ export function Dashboard() {
         <div>
           <h1>SignalGate</h1>
           <p className="dashboard__disclaimer">
-            Murni insight screening berbasis Sectors API — bukan rekomendasi beli/jual.
+            Insight dari Sectors API dan sumber web, dianalisis dan divalidasi model lokal — bukan rekomendasi beli/jual.
           </p>
         </div>
         <button className="dashboard__run-button" onClick={handleRunPipeline} disabled={isRunning}>

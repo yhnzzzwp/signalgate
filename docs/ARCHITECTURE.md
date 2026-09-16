@@ -5,87 +5,194 @@
 Investor ritel IDX kebanjiran pengumuman aksi korporasi (rights issue, private placement,
 akuisisi, perubahan pengendali) tanpa cara cepat membedakan mana katalis pertumbuhan riil dan
 mana pola structural red-flag (asset injection/backdoor listing). SignalGate meng-scan
-pengumuman IDX lewat Sectors API, mengklasifikasikannya jadi skor+label beserta rationale yang
-bisa diaudit — murni insight, bukan rekomendasi beli/jual.
+pengumuman IDX lewat Sectors API, mengekstrak fakta berkutipan dari sumber, lalu memberi label
+screening beserta alasan dan ketidakpastiannya — bukan rekomendasi beli/jual.
+
+## Prinsip: Python memutuskan, model lokal membaca
+
+| Dikerjakan model lokal (Ollama) | Dikerjakan Python (deterministik) |
+|---|---|
+| **Analis — qwen2.5:7b:** membaca teks berita dan mengekstrak fakta: penerima saham, penggunaan dana, pergantian bisnis, pelepasan bisnis lama, injeksi aset — masing-masing dengan kutipan | Mengambil data Sectors dan halaman Scrapling |
+| **Validator — qwen3:4b:** mengekstrak fakta secara independen dari bukti tanpa melihat jawaban analis. Python membandingkan keduanya | Mencocokkan seluruh kata/angka kutipan ke teks bukti; toleransi hanya spasi, kapitalisasi, dan tanda baca dan memastikan nama pihak spesifik serta benar-benar ada di sumber |
+| | Memberi bobot dan skor, menetapkan label |
+| | Menurunkan label ke `inconclusive` bila validator membantah fakta atau tidak menyetujui label |
+| | Compliance Gate, audit, cache |
+
+Model tidak pernah menentukan label secara langsung dan tidak bisa menaikkan hasil.
 
 ## Sumber data
 
-Sectors Financial API v2 (`api.sectors.app/v2`) adalah sumber data inti — kalau dicabut, seluruh
-pipeline kehilangan fungsinya:
-- `news?keyword=...` — pengumuman aksi korporat, sudah pre-tagged kategori & sentiment.
-- `company/report/{ticker}` — ownership, valuation (PBV/PE/intrinsic value), financials,
-  management, peers dalam satu call.
-- `daily/{ticker}` — OHLCV harian, dipakai VALIDATE & WATCH buat cross-check pergerakan harga.
+Sectors Financial API v2 adalah sumber data inti produk: `/pipeline/run` dan `/research/run`
+menolak berjalan tanpa `SECTORS_API_KEY`; hasil tidak dapat selesai jika data perusahaan Sectors tidak tersedia.
 
-## Pipeline — 8 tahap, tahap ACT dihapus total
+- `news?keyword=...` — kandidat aksi korporat.
+- `company/report/{ticker}` — ownership, valuation, financials, overview, management; diringkas sebelum
+  dipakai. Hanya lima seksi itu yang diminta: endpoint menagih 1 kredit per seksi, dan tiga seksi sisanya
+  (`future`, `peers`, `dividend`) tidak dibaca siapa pun.
+- `free-float?sub_sector=...` — porsi kepemilikan publik per emiten, diambil sekali per subsektor lalu
+  dipakai ulang sepanjang satu run (1 kredit per 100 emiten, tidak ada filter per simbol).
+- `financials/quarterly/{ticker}?n_quarters=4` — laporan kuartalan lengkap, terbaru dulu. Jendelanya sengaja
+  pendek: endpoint menagih 1 kredit per kuartal.
 
-Automated trade execution dilarang oleh aturan kompetisi. Pipeline berhenti di scoring/insight,
-tidak ada broker adapter sama sekali.
+Scrapling (HTML publik statis, patuh robots.txt, URL non-publik ditolak) mengambil artikel sumber.
+
+## Pipeline
 
 | Tahap | Modul | Fungsi |
 |---|---|---|
-| ① SENSE | `app/pipeline/sense.py` | Poll `news` (keyword aksi korporat) + `company/report` buat snapshot ownership/financials/valuation |
-| ② HYPOTHESIZE | `app/pipeline/hypothesize.py` | Klasifikasi bucket kasar per keyword: control_change / non_preemptive_capital / rights_issue / general_action |
-| ③ REASON | `app/pipeline/reason.py` + `app/llm/*` | LLM (provider-agnostic) hasilkan verdict terstruktur dengan rubric domain-spesifik |
-| ④ VALIDATE | `app/pipeline/validate.py` | Cross-check klaim numerik LLM (PBV, isu kendali) ke data snapshot asli — cegah halusinasi |
-| ⑤ GATE 🔒 | `app/pipeline/gate.py` | Deterministic, TIDAK bisa dilewati LLM: Pydantic schema keras + keyword denylist rekomendasi transaksi |
-| ⑥ [ACT] | — | Dihapus. Tidak ada eksekusi order. |
-| ⑦ WATCH | `app/pipeline/watch.py` | Status event: `active → resolved_growth / resolved_redflag / stale` |
-| ⑧ AUDIT | `app/pipeline/audit.py` + `app/db/*` | SQLite append-only: tiap SENSE/VALIDATE/GATE decision tercatat, bisa di-query |
+| ① SENSE | `pipeline/sense.py` | Kandidat dari Sectors `news` + `company/report` |
+| ② HYPOTHESIZE | `pipeline/hypothesize.py`, `orchestrator.pick_events` | Bucket & prioritas; hanya `PIPELINE_MAX_EVENTS` teratas (default 3) yang diriset |
+| ③ REASON | `research/engine.py` + qwen2.5:7b | Ekstraksi fakta berkutipan (maks `RESEARCH_EXTRACTION_ATTEMPTS`, default 2) |
+| ④ VALIDATE | `research/facts.py` + qwen3:4b, `pipeline/validate.py` | Pencocokan kutipan & nama pihak oleh Python, cek fakta oleh validator, cek numerik |
+| ④b SCORE | `research/scoring.py` | Bobot deterministik → label + confidence |
+| ⑤ GATE 🔒 | `pipeline/gate.py` | Schema keras + denylist bahasa transaksi |
+| ⑥ [ACT] | — | Dihapus. Tidak ada broker adapter atau eksekusi order. |
+| ⑦ WATCH | `pipeline/watch.py` | Logika transisi status (belum dijadwalkan) |
+| ⑧ AUDIT | `cases/<kasus>/`, SQLite | Bukti, ekstraksi, validasi, dan keputusan tersimpan |
 
-## Compliance Gate — bagian paling kritis
+## Aturan skor
 
-`app/pipeline/gate.py` memastikan output tidak pernah berbentuk rekomendasi investasi, secara
-arsitektural (bukan cuma instruksi prompt yang bisa diabaikan LLM):
+| Fakta terverifikasi | Arah | Bobot |
+|---|---|---|
+| Pergantian/penambahan bidang usaha baru | red | 3 |
+| Bisnis atau anak usaha lama dilepas | red | 2 |
+| Injeksi aset / inbreng / pengambilalihan aset atau piutang dari pihak terkait | red | 2 |
+| Penerima saham/dana pihak baru | red | 2 |
+| Dana untuk bisnis baru di luar bisnis inti | red | 1 |
+| PBV > 20x (data Sectors) | red | 1 |
+| Penerima saham/dana pemegang saham lama atau afiliasinya | growth | 2 |
+| Dana untuk ekspansi bisnis inti | growth | 2 |
+| Saham ditawarkan ke seluruh pemegang saham (HMETD) | growth | 1 |
+| Dana untuk modal kerja | growth | 1 |
 
-1. **Schema keras** — `Verdict` adalah Pydantic model dengan `label` terbatas ke 3 enum
-   (`growth_catalyst` / `structural_red_flag` / `inconclusive`). LLM tidak bisa mengeluarkan
-   teks bebas sebagai keputusan akhir.
-2. **Keyword denylist** — rationale/red-flag/growth signals di-scan untuk istilah yang menyerupai
-   rekomendasi transaksi ("beli", "jual", "buy", "sell", "target price", dst, word-boundary
-   match, bukan substring naif). Kalau kena, event di-flag `needs_review` dan teks mentahnya
-   disembunyikan dari dashboard (`sanitize_for_display`).
+### Sinyal data pasar
 
-Teruji di `backend/tests/test_gate.py` — termasuk kasus Bahasa Indonesia dan Inggris, serta bukti
-tidak ada false-positive dari substring (mis. "sellular" tidak ke-trigger "sell").
+Dihitung Python dari Sectors, bukan dari model, dan hanya aktif pada bucket yang menerbitkan saham atau
+menggalang dana (`rights_issue`, `non_preemptive_capital`) — di luar itu keduanya diam.
 
-## LLM provider — multi-provider dengan mock fallback wajib
+| Kondisi terukur | Arah | Bobot |
+|---|---|---|
+| Free float < 15% saat emiten menambah modal (dilusi memusatkan kendali) | red | 1 |
+| Arus kas operasi negatif ≥ 3 dari 4 kuartal terakhir saat emiten menggalang dana | red | 1 |
+| Klaim ekspansi bisnis inti sementara pendapatan turun beruntun 4 kuartal | red | 1 |
 
-`app/llm/factory.py` memilih provider dari environment variable yang tersedia (Claude → OpenAI →
-Gemini → mock), supaya juri bisa clone & jalankan pipeline penuh TANPA API key sendiri. Mock
-provider (`app/llm/mock_provider.py`) adalah heuristik deterministik (bucket + PBV + nama
-pemegang saham utama) — cukup buat menangkap kasus dengan sinyal kuat (PBV ekstrem), tapi
-diketahui TIDAK bisa membedakan nuansa seperti "pemegang saham afiliasi lama menambah modal"
-vs "operator baru masuk" — itu perlu reasoning LLM asli dengan rubric lengkap
-(`app/llm/base.py::REASONING_RUBRIC`).
+Tiga aturan itu memakai jendela utuh: satu kuartal tanpa angka membuat aturannya diam, bukan menebak.
+Alasan sinyal free float mengutip peringkat emiten di dalam subsektornya sendiri (`tertipis ke-N dari M`)
+supaya pembaca bisa memeriksa ulang pembandingnya, bukan ambang indeks eksternal yang tak terlihat.
 
-## Kasus validasi (bukan data sintetis)
+**Invarian:** seluruh sinyal data pasar berbobot 1 sedangkan `RED_FLAG_THRESHOLD` = 4, jadi data pasar
+tanpa satu pun fakta terverifikasi dari dokumen sumber selalu berakhir `inconclusive`. Data pasar
+memberi konteks pada aksi korporasi; ia tidak pernah menilai sahamnya. Dikunci oleh
+`test_sectors_market_data_alone_can_never_produce_a_label`.
 
-Ditemukan & dianalisis manual sebelum pipeline dibangun, dipakai sebagai golden test
-(`backend/tests/test_pipeline_golden.py`):
+Setiap jenis fakta dihitung sekali; pemegang saham lama dan afiliasi dianggap satu sinyal. Label:
 
-- **MGLV** (PT NexAI Digital Infrastruktur, dulu PT Panca Anugrah Wisesa) — bisnis furniture
-  lama didivestasi total ke satu pihak, bisnis AI/data-center baru disuntik dari pihak lain,
-  emiten ganti nama, PBV pasca-transaksi >250x. Pipeline (bahkan dengan mock provider) menangkap
-  ini sebagai `structural_red_flag` murni dari data PBV & ownership real-time — tanpa perlu
-  scraping PDF manual seperti pendekatan sebelumnya.
-- **HATM** (PT Habco Trans Maritima) — private placement oleh pemegang saham afiliasi LAMA
-  (bukan pihak baru) buat danai ekspansi armada kapal, laba bersih naik 667% YoY. Butuh reasoning
-  LLM asli (bukan mock) buat membedakan ini dari MGLV — pembeda struktural bukan cuma "ada
-  private placement", tapi siapa penerimanya dan konteks keuangannya.
+- `structural_red_flag` — red ≥ 4 dan red ≥ growth + 2
+- `growth_catalyst` — growth ≥ 3, red ≤ 1, dan wajib ada bukti ekspansi bisnis inti
+- `inconclusive` — selain itu
 
-## Menjalankan tanpa API key (syarat wajib brief)
+Bobot ini heuristik awal yang eksplisit dan bisa diaudit, bukan hasil kalibrasi statistik.
+
+## Validasi
+
+Python mencocokkan semua kata dan angka kutipan; perbedaan kapitalisasi, spasi, dan tanda baca
+boleh diterima. Nama penerima harus spesifik, muncul dalam kutipan, dan bukan identitas emiten sendiri.
+Pembaca kedua melakukan ekstraksi independen tanpa melihat fakta atau label analis. Python
+membandingkan kategori, pihak, dan sumber, kemudian menghitung ulang label.
+
+`strict` adalah default. Mode `lenient` menyimpan fakta yang belum dikonfirmasi untuk inspeksi,
+tetapi **keduanya hanya memberi skor pada fakta berstatus supported**. Perbedaan label antara
+pembacaan pertama dan kedua menurunkan hasil ke `inconclusive`. Kesepakatan dua model bukan
+jaminan kebenaran; label acuan evaluasi tetap berasal dari peninjauan manusia.
+
+## Status hasil riset
+
+- `completed` — pembacaan independen selesai; label dihitung dari fakta yang lolos.
+- `needs_review` — pembacaan berbeda atau fakta belum terkonfirmasi.
+- `insufficient_evidence` — tidak ada fakta yang lolos pemeriksaan.
+- `missing_sectors_data` — workflow publik tidak memperoleh data perusahaan Sectors.
+- `deterministic_only` — `LLM_BACKEND=off`; hanya sinyal data Sectors, praktis selalu `inconclusive`.
+- `model_unavailable` — Ollama mati, model belum diunduh, timeout, atau output tidak sesuai schema.
+
+## Hemat konteks dan memori
+
+1. Hanya kandidat prioritas teratas yang diriset.
+2. Laporan Sectors diringkas; laporan mentah disimpan terpisah.
+3. Halaman web hanya dikirim paragraf yang menyebut ticker, nama emiten, atau istilah aksi korporat
+   (`RESEARCH_CONTEXT_CHARS`); kutipan tetap dicocokkan ke teks penuh.
+4. Dua sampai tiga panggilan model per kasus: ekstraksi (ulang sekali bila ada fakta yang ditolak) dan
+   validasi. Validasi dilewati bila tidak ada fakta.
+5. Hasil `completed` tanpa fetch gagal di-cache setelah sumber diambil ulang. Kunci mencakup hash bukti, seluruh event, konfigurasi, versi prompt, dan digest model; TTL default satu jam.
+6. Batas prompt diperkirakan dari karakter dan anggaran konteks; ini estimasi, bukan tokenizer
+   yang membuktikan konteks tidak terpotong. Output yang terpotong ditolak.
+7. Mode thinking qwen3 dimatikan untuk validator.
+8. Kedua model dipanggil bergantian. Periksa `ollama ps` untuk residensi aktual; jangan menganggap
+   keduanya selalu berada di GPU bersamaan.
+
+## Struktur folder kasus
+
+```
+cases/<TICKER>-<id>/
+  evidence/E001.json, E002.json, ...     bukti (input, sectors_api, scrapling) + hash
+  evidence/sectors_report_raw.json
+  evidence/fetch_failures.json
+  extraction/01.{json,md}                ekstraksi analis + hasil penyaringan Python
+  independent_extraction.json            ekstraksi kedua tanpa jawaban analis
+  validation.{json,md}                   pemeriksaan fakta oleh validator
+  decision.{json,md}                     sinyal, label, dan catatan
+cases/_cache/<hash>.json
+```
+
+## Compliance Gate
+
+`pipeline/gate.py` memastikan output tidak berbentuk rekomendasi investasi secara arsitektural:
+schema label terbatas tiga nilai, dan denylist istilah transaksi ("beli", "jual", "buy", "sell",
+"target price", word boundary). Alasan pada verdict disusun dari template Python, bukan kutipan
+mentah, supaya istilah legal seperti "perjanjian jual beli" di artikel tidak memicu gate. Respons
+`/research/run` dan data dashboard selalu memakai verdict yang sudah melewati gate.
+
+## Menjalankan
+
+Pasang aplikasi Ollama dari https://ollama.com/download (atau `brew install --cask ollama-app`),
+buka aplikasinya, lalu unduh kedua model:
+
+```bash
+ollama pull qwen2.5:7b
+ollama pull qwen3:4b
+```
 
 ```bash
 cd backend && python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # isi SECTORS_API_KEY, biarkan LLM key kosong -> mock provider otomatis
+cp .env.example .env    # isi SECTORS_API_KEY
 uvicorn app.main:app --reload
 ```
 
+Uji pengembangan hanya dengan artikel Scrapling, tanpa memanggil Sectors API:
+
 ```bash
-cd frontend && npm install && npm run dev
+python -m app.scrapling_check                   # kasus bawaan: MGLV, HATM, APEX, LAPD, FORU
+python -m app.scrapling_check BBCA=https://...  # kasus sendiri
 ```
 
-Pipeline jalan penuh end-to-end (SENSE→HYPOTHESIZE→REASON [mock]→VALIDATE→GATE→AUDIT→dashboard)
-tanpa satu pun LLM API key — cuma perlu `SECTORS_API_KEY`.
+## Rujukan konsep
+
+Pola "LLM terbatas, Python yang memutuskan" dipilih setelah membaca kode tiga pemenang Alpaca AI
+Trading Agents Hackathon (konsep saja, tanpa kode yang diambil): VegaGuard memakai LLM hanya untuk
+menjelaskan fakta yang sudah divalidasi, TradePilot memberi Python hak veto atas keputusan LLM.
+
+## Keterbatasan yang diketahui
+
+- Uji lokal menemukan salah kategori pada kedua model. Belum ada perbandingan terkontrol dengan
+  model lain; ketidaksepakatan atau kekurangan bukti menghasilkan `inconclusive`.
+- Satu artikel sering tidak memuat konteks penuh (misalnya pergantian bisnis MGLV ada di data industri
+  Sectors dan pengumuman divestasi, bukan di berita rights issue-nya).
+- Bobot skor belum dikalibrasi terhadap data historis.
+- PDF keterbukaan informasi IDX belum didukung (Scrapling v1 hanya HTML).
+- `/pipeline/run` berjalan sinkron; satu run di laptop bisa memakan beberapa menit.
+- Capture/replay lokal sudah ada di `app.evaluate`; paket demo yang siap dibagikan ke juri belum dibuat.
+
+## Evaluasi dan aturan hackathon
+
+Lihat [rencana validasi dan temuan arsitektur](VALIDASI_HACKATHON.md). Skor confidence adalah heuristik,
+bukan probabilitas benar. Uji pasar berjalan hanya membaca data, tanpa eksekusi order.

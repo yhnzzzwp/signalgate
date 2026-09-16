@@ -17,12 +17,6 @@ def next_watch_status(
     if days_since_screened >= STALE_AFTER_DAYS:
         return "stale"
 
-    if label == VerdictLabel.structural_red_flag and latest_price_change_pct is not None:
-        if abs(latest_price_change_pct) < 2.0:
-            return "resolved_redflag"
-
-    if label == VerdictLabel.growth_catalyst and latest_price_change_pct is not None:
-        if latest_price_change_pct > 0:
-            return "resolved_growth"
-
+    # Price movement does not verify a corporate-action thesis. Resolution needs
+    # separately reviewed follow-up disclosures; until then only age changes state.
     return "active"
