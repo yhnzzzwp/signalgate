@@ -51,10 +51,51 @@ tidak ada pintu samping yang melewati Compliance Gate. CLI (`python -m app.scan`
 | ③ REASON | `research/engine.py` + qwen2.5:7b | Ekstraksi fakta berkutipan (maks `RESEARCH_EXTRACTION_ATTEMPTS`, default 2) |
 | ④ VALIDATE | `research/facts.py` + qwen3:4b, `pipeline/validate.py` | Pencocokan kutipan & nama pihak oleh Python, cek fakta oleh validator, cek numerik |
 | ④b SCORE | `research/scoring.py` | Bobot deterministik → label + confidence |
-| ⑤ GATE 🔒 | `pipeline/gate.py` | Schema keras + denylist bahasa transaksi |
+| ⑤ GATE 🔒 | `pipeline/gate.py` | Schema keras + denylist bahasa transaksi **dan** penilaian nilai, dipindai refleksif ke seluruh field prosa |
 | ⑥ [ACT] | — | Dihapus. Tidak ada broker adapter atau eksekusi order. |
 | ⑦ WATCH | `pipeline/watch.py` | Logika transisi status (belum dijadwalkan) |
 | ⑧ AUDIT | `cases/<kasus>/`, SQLite | Bukti, ekstraksi, validasi, dan keputusan tersimpan |
+
+## Progres dan pemulihan run
+
+Backend menerbitkan tahapnya lewat SSE di `/run/stream`, satu pesan per peristiwa:
+
+| Event | Kapan | Isi |
+|---|---|---|
+| `run` | awal dan akhir run | `kind`, status akhir |
+| `case` | awal dan akhir tiap kasus | `index`, `total`, dan `label` saat selesai |
+| `model` | awal dan akhir tiap pembacaan model | `role`, `model`, `case_id`, `seconds` |
+| `scan` / `sense` / `research` / `gate` | saat baris audit ditulis | ringkasan tahapnya |
+
+Event `case` akhir diterbitkan **setelah** kartunya di-commit, bukan setelah gate lewat, supaya
+hitungan "selesai" tidak pernah mendahului apa yang benar-benar tersimpan. Setiap payload membawa
+`run_id` agar sisa event run sebelumnya tidak terbaca sebagai progres.
+
+Dashboard menentukan tahap aktif dari operasi **terakhir**, bukan indeks tertinggi sepanjang run —
+kalau tidak, tahap yang tidak pernah dijalankan ikut tampak selesai hanya karena indeksnya lebih
+rendah. Daftar tahap juga berbeda antara jalur scan dan pipeline.
+
+## Compliance Gate
+
+`pipeline/gate.py` memastikan output tidak berbentuk rekomendasi investasi secara arsitektural:
+schema label terbatas tiga nilai, dan denylist istilah transaksi dengan word boundary. Alasan pada
+verdict disusun dari template Python, bukan kutipan mentah, supaya istilah legal seperti "perjanjian
+jual beli" di artikel tidak memicu gate. Respons `/research/run`, `/scan/run`, dan data dashboard
+selalu memakai verdict yang sudah melewati gate.
+
+Dua celah ditutup setelah sinyal data pasar ditambahkan:
+
+- **Denylist diperluas ke penilaian nilai.** Versi lama hanya menangkap kata transaksi (beli, jual,
+  rekomendasi, target price). Kalimat seperti *"sahamnya bagus"*, *"prospek cerah"*, *"layak
+  dikoleksi"*, atau *"undervalued"* lolos semuanya — padahal itulah bentuk kalimat yang dihasilkan
+  fitur komposit. Kata bersayap seperti "murah" dan "mahal" sengaja **tidak** dimasukkan: keduanya
+  muncul wajar di kutipan fakta dan akan menahan hasil yang sah.
+- **Pemindaian kini refleksif.** `apply_gate()` dulu menggabungkan tiga field yang ditulis tangan,
+  sehingga field baru apa pun di `Verdict` melewati gate tanpa diperiksa sama sekali.
+  `prose_fields()` sekarang menemukan sendiri seluruh field prosa lewat `model_fields`, dan
+  `sanitize_for_display()` mengosongkan semuanya. Field baru terjaga secara bawaan, bukan karena
+  seseorang ingat memperbarui daftarnya. `label`, `confidence`, dan `provider` dikecualikan: itu
+  identitas mesin, bukan prosa, dan tetap utuh untuk audit.
 
 ## Aturan skor
 
@@ -65,7 +106,7 @@ tidak ada pintu samping yang melewati Compliance Gate. CLI (`python -m app.scan`
 | Injeksi aset / inbreng / pengambilalihan aset atau piutang dari pihak terkait | red | 2 |
 | Penerima saham/dana pihak baru | red | 2 |
 | Dana untuk bisnis baru di luar bisnis inti | red | 1 |
-| PBV > 20x (data Sectors) | red | 1 |
+| Valuasi jauh di atas sebayanya (lihat di bawah) | red | 1 |
 | Penerima saham/dana pemegang saham lama atau afiliasinya | growth | 2 |
 | Dana untuk ekspansi bisnis inti | growth | 2 |
 | Saham ditawarkan ke seluruh pemegang saham (HMETD) | growth | 1 |
@@ -81,8 +122,16 @@ menggalang dana (`rights_issue`, `non_preemptive_capital`) — di luar itu kedua
 | Free float < 15% saat emiten menambah modal (dilusi memusatkan kendali) | red | 1 |
 | Arus kas operasi negatif ≥ 3 dari 4 kuartal terakhir saat emiten menggalang dana | red | 1 |
 | Klaim ekspansi bisnis inti sementara pendapatan turun beruntun 4 kuartal | red | 1 |
+| PBV > 3x PB subsektornya; bila data subsektor tak ada, jatuh ke ambang mutlak 20x | red | 1 |
 
-Tiga aturan itu memakai jendela utuh: satu kuartal tanpa angka membuat aturannya diam, bukan menebak.
+Aturan valuasi membandingkan emiten terhadap **subsektornya sendiri**, bukan terhadap satu angka
+untuk seluruh pasar. `EXTREME_PBV = 20` lama praktis tidak pernah menyala di sektor bervaluasi
+rendah: PB agregat subsektor `banks` pada 2026 ada di 0,80x, jadi bank dengan PBV 4,2x — lima kali
+lipat sebayanya — lolos tanpa sinyal. Ambang mutlak tetap dipertahankan sebagai cadangan ketika
+data subsektor tidak tersedia. `subsector/report` memakai bentuk berbeda dari company report:
+`historical_valuation` di sana dict berkunci tahun, bukan list.
+
+Tiga aturan berbasis kuartal memakai jendela utuh: satu kuartal tanpa angka membuat aturannya diam, bukan menebak.
 Alasan sinyal free float mengutip peringkat emiten di dalam subsektornya sendiri (`tertipis ke-N dari M`)
 supaya pembaca bisa memeriksa ulang pembandingnya, bukan ambang indeks eksternal yang tak terlihat.
 
@@ -149,14 +198,6 @@ cases/<TICKER>-<id>/
 cases/_cache/<hash>.json
 ```
 
-## Compliance Gate
-
-`pipeline/gate.py` memastikan output tidak berbentuk rekomendasi investasi secara arsitektural:
-schema label terbatas tiga nilai, dan denylist istilah transaksi ("beli", "jual", "buy", "sell",
-"target price", word boundary). Alasan pada verdict disusun dari template Python, bukan kutipan
-mentah, supaya istilah legal seperti "perjanjian jual beli" di artikel tidak memicu gate. Respons
-`/research/run` dan data dashboard selalu memakai verdict yang sudah melewati gate.
-
 ## Menjalankan
 
 Pasang aplikasi Ollama dari https://ollama.com/download (atau `brew install --cask ollama-app`),
@@ -194,8 +235,12 @@ menjelaskan fakta yang sudah divalidasi, TradePilot memberi Python hak veto atas
 - Satu artikel sering tidak memuat konteks penuh (misalnya pergantian bisnis MGLV ada di data industri
   Sectors dan pengumuman divestasi, bukan di berita rights issue-nya).
 - Bobot skor belum dikalibrasi terhadap data historis.
-- PDF keterbukaan informasi IDX belum didukung (Scrapling v1 hanya HTML).
-- `/pipeline/run` berjalan sinkron; satu run di laptop bisa memakan beberapa menit.
+- Asosiasi lampiran IDX bersandar pada tanggal di nama berkas; pengumuman tanpa tanggal yang bisa
+  diturunkan tidak digabungkan dan diserahkan ke pemeriksaan manusia.
+- `/pipeline/run` dan `/scan/run` berjalan di latar dan langsung mengembalikan `run_id`; status
+  dibaca ulang lewat `/runs/active` atau `/runs/{id}`, jadi refresh halaman tidak menghilangkan
+  progres. Satu run pada satu waktu, dijaga `run_lock`; job yang tertinggal saat backend mati
+  ditutup otomatis saat start berikutnya.
 - Capture/replay lokal sudah ada di `app.evaluate`; paket demo yang siap dibagikan ke juri belum dibuat.
 
 ## Evaluasi dan aturan hackathon

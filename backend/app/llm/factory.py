@@ -2,6 +2,12 @@ from app.config import Settings
 from app.research.agents import OllamaAgent
 from app.research.engine import ResearchEngine
 
+# Jejak penalaran merusak JSON ketat yang diharapkan schema, jadi mode berpikir harus dimatikan.
+# Daftarnya eksplisit dan bukan heuristik: Ollama hanya menerima opsi `think` untuk model yang
+# memang punya mode penalaran, dan mengirimnya ke model lain bisa ditolak. Dulu hanya `qwen3` yang
+# ditangani, sehingga mengganti OLLAMA_MODEL ke model penalaran lain gagal tanpa petunjuk.
+THINKING_MODEL_PREFIXES = ("qwen3", "deepseek-r1", "glm-5", "glm-4.7", "magistral", "phi4-reasoning")
+
 
 def make_agent(settings: Settings, model_name: str) -> OllamaAgent:
     return OllamaAgent(
@@ -9,7 +15,7 @@ def make_agent(settings: Settings, model_name: str) -> OllamaAgent:
         model_name,
         settings.ollama_num_ctx,
         settings.ollama_timeout_seconds,
-        think=False if model_name.startswith("qwen3") else None,
+        think=False if model_name.startswith(THINKING_MODEL_PREFIXES) else None,
         keep_alive=settings.ollama_keep_alive,
     )
 

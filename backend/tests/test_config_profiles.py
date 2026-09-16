@@ -5,7 +5,7 @@ from unittest.mock import patch
 from pydantic import ValidationError
 
 from app.config import PROFILES, Settings
-from app.llm.factory import build_provider
+from app.llm.factory import THINKING_MODEL_PREFIXES, build_provider
 
 
 def settings(**overrides):
@@ -40,11 +40,22 @@ class ProfileTests(unittest.TestCase):
                     [resolved.ollama_model, *resolved.ollama_reviewer_models]}
         self.assertEqual(len(families), 3, families)
 
-    def test_no_reviewer_is_a_thinking_model(self):
-        """make_agent() only passes think=False for qwen3, so a reasoning model would break strict JSON."""
-        resolved = settings(signalgate_profile="workstation")
-        for name in [resolved.ollama_model, *resolved.ollama_reviewer_models]:
-            self.assertFalse(name.startswith(("deepseek-r1", "glm-5", "glm-4.7", "magistral")), name)
+    def test_no_profile_model_is_a_thinking_model(self):
+        """Jejak penalaran merusak JSON ketat; profil tidak boleh mengandalkan penekanannya."""
+        for name in PROFILES:
+            resolved = settings(signalgate_profile=name)
+            for model in [resolved.ollama_model, *resolved.ollama_reviewer_models]:
+                self.assertFalse(model.startswith(THINKING_MODEL_PREFIXES), f"{name}: {model}")
+
+    def test_thinking_mode_is_suppressed_for_every_known_reasoning_family(self):
+        """Dulu hanya qwen3 yang ditangani, jadi model penalaran lain gagal tanpa petunjuk."""
+        for prefix in THINKING_MODEL_PREFIXES:
+            provider = build_provider(settings(ollama_model=f"{prefix}:8b"))
+            self.assertIs(provider.model.think, False, prefix)
+
+    def test_a_plain_model_is_not_sent_the_thinking_option_at_all(self):
+        """Ollama menolak opsi `think` pada model yang tidak punya mode penalaran."""
+        self.assertIsNone(build_provider(settings(ollama_model="qwen2.5:14b")).model.think)
 
     def test_a_validator_that_would_be_silently_ignored_is_refused(self):
         with self.assertRaises(ValidationError) as caught:

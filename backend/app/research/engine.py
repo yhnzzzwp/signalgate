@@ -11,13 +11,14 @@ from uuid import uuid4
 
 from app.config import Settings
 from app.pipeline.schema import Verdict, VerdictLabel
+from app.pipeline.stream import run_events
 from app.research.agents import AgentError
 from app.research.context import focus_terms, summarize_company_report
 from app.research.evidence import EvidenceStore
 from app.research.documents import DocumentSource
 from app.research.facts import apply_validation, verified_facts, compare_independent_facts
 from app.research.models import Extraction, Fact, ResearchOutcome, Validation
-from app.research.scoring import MarketContext, decide, score_signals
+from app.research.scoring import MarketContext, compose_summary, decide, score_signals
 
 PROMPT_VERSION = "2026-09-16.documents-5"
 # Indonesian and "Go To English Page" variants of the IDX cover form, mapped to one set of keys.
@@ -108,6 +109,10 @@ def fact_lines(facts: list[Fact], issues: list[str]) -> list[str]:
 
 
 class ResearchEngine:
+    # Konteks kasus yang sedang dibaca, dipakai event progres. Nilai bawaan kelas supaya
+    # _timed_run() tetap aman bila dipanggil di luar research().
+    _case: dict = {}
+
     def __init__(self, settings: Settings, model=None, validator=None, scraper=None, reviewers=None):
         self.settings = settings
         self.model = model
@@ -145,6 +150,7 @@ class ResearchEngine:
     def research(self, event, snapshot, report=None, *, require_sectors=False, use_cache=True, require_pdf=False) -> ResearchOutcome:
         self.last_review_rounds = 0
         self.model_runs = []
+        self._case = {"ticker": event.ticker}
         if report is not None:
             sectors_title, sectors_text = "Sectors company report (ringkas)", summarize_company_report(report)
         elif snapshot is not None:
@@ -154,6 +160,7 @@ class ResearchEngine:
 
         company_name = (report or {}).get("company_name") or (snapshot.company_name if snapshot else None)
         case_id = re.sub(r"[^A-Za-z0-9_-]", "_", event.ticker)[:20] + "-" + uuid4().hex[:12]
+        self._case["case_id"] = case_id
         store = EvidenceStore(self.settings.research_cases_dir / case_id, self.settings.research_max_pages,
                               self.scraper, focus_terms(event.ticker, company_name),
                               self.settings.research_context_chars, self.settings.research_context_total_chars)
@@ -277,6 +284,7 @@ class ResearchEngine:
         verdict = Verdict(
             label=label,
             confidence=confidence,
+            summary=compose_summary(event.ticker, event.bucket, signals, label),
             provider=self.name,
             rationale_bullets=reasons or ["Belum ada sinyal terverifikasi dari sumber."],
             red_flag_signals=[signal.reason for signal in signals if signal.side == "red"],
@@ -302,12 +310,17 @@ class ResearchEngine:
         return outcome
 
     def _timed_run(self, agent, role: str, text: str, schema):
+        # Satu pembacaan model memakan puluhan detik. Tanpa event awal, dashboard diam sepanjang itu
+        # dan tampak berhenti di tahap sebelumnya.
         started = time.monotonic()
+        case = dict(self._case, role=role, model=agent.name)
+        run_events.publish("model", case.get("ticker", "*"), {**case, "phase": "start"})
         try:
             return agent.run(text, schema)
         finally:
-            self.model_runs.append({"role": role, "model": agent.name,
-                                    "seconds": round(time.monotonic() - started, 2)})
+            seconds = round(time.monotonic() - started, 2)
+            self.model_runs.append({"role": role, "model": agent.name, "seconds": seconds})
+            run_events.publish("model", case.get("ticker", "*"), {**case, "phase": "end", "seconds": seconds})
 
     def _offload(self, agent, role: str) -> None:
         if not self.settings.ollama_offload_between_models or not hasattr(agent, "unload"):

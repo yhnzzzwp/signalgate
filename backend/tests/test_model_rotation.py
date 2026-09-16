@@ -71,8 +71,13 @@ class ModelRotationTests(unittest.TestCase):
     def test_sectors_api_switch_blocks_live_calls(self):
         disabled = Settings(_env_file=None, sectors_api_key="key", sectors_api_enabled=False)
         self.assertIn("hemat API", sectors_block_reason(disabled))
-        self.assertIsNone(sectors_block_reason(Settings(_env_file=None, sectors_api_key="key")))
-        self.assertIn("SECTORS_API_KEY", sectors_block_reason(Settings(_env_file=None)))
+        # Prasyarat dinyatakan sendiri: test ini menguji saklarnya, dan conftest mematikan Sectors
+        # untuk seluruh sesi. Bergantung pada nilai bawaan lingkungan membuat hasilnya tidak pasti.
+        enabled = Settings(_env_file=None, sectors_api_key="key", sectors_api_enabled=True)
+        self.assertIsNone(sectors_block_reason(enabled))
+        self.assertIs(Settings.model_fields["sectors_api_enabled"].default, True)
+        keyless = Settings(_env_file=None, sectors_api_enabled=True, sectors_api_key="")
+        self.assertIn("SECTORS_API_KEY", sectors_block_reason(keyless))
 
 
 def test_models_are_not_called_when_every_source_failed(tmp_path):

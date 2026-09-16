@@ -29,7 +29,10 @@ rekomendasi transaksi. Keputusan investasi sepenuhnya tanggung jawab pengguna.
 6. **GATE & AUDIT** — hasil berbahasa transaksi tidak pernah tampil; bukti dan setiap langkah
    tersimpan di `cases/`.
 
-Detail lengkap, termasuk tabel bobot skor dan mode validator, di [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Apa yang produk janjikan dan apa yang sengaja tidak, di
+[`docs/SPESIFIKASI_V1.md`](docs/SPESIFIKASI_V1.md). Katalog sinyalnya bukan prosa melainkan modul
+yang diuji, `backend/app/catalog.py`. Detail teknis, termasuk tabel bobot skor dan mode validator,
+di [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Menjalankan
 
@@ -205,8 +208,12 @@ Tombol Scrapling memanggil `POST /scan/run`, yang **tidak** memeriksa `SECTORS_A
 yang tetap hidup saat `SECTORS_API_ENABLED=false`. Hasilnya melewati Compliance Gate yang sama dan
 tersimpan ke database, jadi dashboard dan audit trail terisi tanpa memakai kredit sama sekali.
 
-Kandidat hanya diriset kalau punya tautan PDF; yang tidak punya dilewati, dan jumlahnya dilaporkan
-di notifikasi. Cakupannya selalu parsial — hanya sumber yang kamu daftarkan, bukan seluruh IDX.
+Kandidat tanpa lampiran PDF tetap diriset dari artikel sumbernya; PDF diwajibkan terbaca hanya bila
+memang ada. Kandidat yang sudah berputusan tidak diriset ulang, dan yang gagal karena sebab
+lingkungan dicoba lagi dengan jeda menaik — jadi kandidat baru selalu kebagian giliran. Lampiran
+hanya dipasangkan bila tanggal pengumumannya terbukti sama; kalau ambigu, kandidat ditandai
+`ambiguous_documents` untuk diperiksa manusia. Cakupannya selalu parsial — hanya sumber yang kamu
+daftarkan, bukan seluruh IDX.
 
 Uji pengembangan hanya dengan artikel Scrapling, tanpa memanggil Sectors API:
 

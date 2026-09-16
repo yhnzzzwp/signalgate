@@ -24,7 +24,11 @@ class ScreenedEventRecord(Base):
     gate_status: Mapped[str] = mapped_column(String)
     watch_status: Mapped[str] = mapped_column(String, default="active")
     payload: Mapped[dict] = mapped_column(JSON)
+    # Identitas kandidat yang menghasilkan kartu ini. Publikasi ulang kandidat yang sama memperbarui
+    # barisnya, bukan menambah kartu kedua. NULL untuk jalur yang tidak punya antrean.
+    dedupe_key: Mapped[str | None] = mapped_column(String, unique=True, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class AuditLogRecord(Base):
@@ -35,3 +39,17 @@ class AuditLogRecord(Base):
     ticker: Mapped[str] = mapped_column(String, index=True)
     detail: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+
+
+class RunJobRecord(Base):
+    """Satu run pipeline atau scan, dapat dibaca ulang setelah refresh atau koneksi putus."""
+
+    __tablename__ = "run_jobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(String, nullable=True)

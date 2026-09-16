@@ -1,22 +1,27 @@
 from __future__ import annotations
 
-from threading import Lock
+from contextlib import closing
+from threading import Lock, Thread
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.routes import register_routes
 from app.config import get_settings, sectors_block_reason
+from app.db.models import RunJobRecord
 from app.db.session import build_session_factory
 from app.llm.factory import build_provider
 from app.pipeline.audit import persist_screened_event, record_audit
 from app.pipeline.presentation import screen_outcome
 from app.pipeline.orchestrator import run_pipeline
 from app.pipeline.schema import ActionBucket, CandidateEvent
-from app.pipeline.sense import FreeFloatLookup, snapshot_company
+from app.pipeline.sense import FreeFloatLookup, SubsectorValuationLookup, snapshot_company
+from app.pipeline import jobs
+from app.pipeline.stream import event_source, run_events
 from app.research.documents import DocumentSource
-from app.scan import Scanner, research_queue_items
+from app.scan import Scanner, mark_published, research_queue_items, summarize_scan
 from app.sectors.client import SectorsClient, SectorsAPIError
 
 app = FastAPI(title="SignalGate", version="0.3.0")
@@ -33,6 +38,11 @@ session_factory = build_session_factory(settings)
 register_routes(app, session_factory)
 run_lock = Lock()
 
+with session_factory() as _session:
+    _stranded = jobs.release_stale(_session)
+if _stranded:
+    print(f"[signalgate] {_stranded} run tertinggal dari sesi sebelumnya ditandai gagal.", flush=True)
+
 
 def require_sectors_key() -> None:
     reason = sectors_block_reason(settings)
@@ -40,27 +50,66 @@ def require_sectors_key() -> None:
         raise HTTPException(400, reason)
 
 
-@app.post("/pipeline/run")
+def start_job(kind: str, work) -> dict:
+    """Jalankan run di latar dan kembalikan identitasnya seketika.
+
+    Run memakan menit. Menahan POST selama itu berarti refresh halaman atau koneksi yang putus
+    menghilangkan hasilnya bagi pengguna, padahal backend tetap bekerja. Dengan job tersimpan,
+    dashboard bisa menyambung kembali ke run yang sedang berjalan.
+    """
+    if not run_lock.acquire(blocking=False):
+        raise HTTPException(409, "Satu run sedang berjalan; tunggu sampai selesai.")
+    try:
+        with session_factory() as session:
+            job = jobs.create(session, kind)
+            payload = jobs.serialize(job)
+    except Exception:
+        run_lock.release()
+        raise
+    run_events.set_run(payload["id"])
+
+    def runner() -> None:
+        try:
+            result = work()
+            with session_factory() as session:
+                jobs.finish(session, payload["id"], result)
+            run_events.publish("run", "*", {"phase": "end", "status": jobs.COMPLETED, **result})
+        except BaseException as error:  # noqa: BLE001 - kegagalan apa pun harus menutup job
+            with session_factory() as session:
+                jobs.fail(session, payload["id"], f"{type(error).__name__}: {error}")
+            run_events.publish("run", "*", {"phase": "end", "status": jobs.FAILED,
+                                            "error": f"{type(error).__name__}: {error}"})
+        finally:
+            run_events.set_run(None)
+            run_lock.release()
+
+    Thread(target=runner, name=f"signalgate-{kind}", daemon=True).start()
+    run_events.publish("run", "*", {"phase": "start", "kind": kind})
+    return payload
+
+
+@app.post("/pipeline/run", status_code=202)
 def trigger_pipeline() -> dict:
     require_sectors_key()
-    if not run_lock.acquire(blocking=False):
-        raise HTTPException(409, "Riset masih berjalan.")
-    provider = None
-    try:
-        provider = build_provider(settings)
-        client = SectorsClient(api_key=settings.sectors_api_key)
-        with session_factory() as session:
-            results = run_pipeline(client, provider, session, settings.pipeline_max_events)
-    except SectorsAPIError:
-        raise HTTPException(502, "Sectors tidak dapat dihubungi; periksa key, kuota, atau jaringan.") from None
-    finally:
-        if provider is not None:
-            provider.close()
-        run_lock.release()
-    return {"screened_count": len(results), "provider": provider.name}
+
+    def work() -> dict:
+        provider = None
+        try:
+            provider = build_provider(settings)
+            client = SectorsClient(api_key=settings.sectors_api_key)
+            with session_factory() as session:
+                results = run_pipeline(client, provider, session, settings.pipeline_max_events)
+            return {"screened_count": len(results), "provider": provider.name}
+        except SectorsAPIError as error:
+            raise RuntimeError("Sectors tidak dapat dihubungi; periksa key, kuota, atau jaringan.") from error
+        finally:
+            if provider is not None:
+                provider.close()
+
+    return start_job("pipeline", work)
 
 
-@app.post("/scan/run")
+@app.post("/scan/run", status_code=202)
 def trigger_scan(limit: int = 3) -> dict:
     """Jalur Scrapling: temukan kandidat dari halaman publik lalu riset PDF-nya. Nol kredit Sectors.
 
@@ -68,9 +117,8 @@ def trigger_scan(limit: int = 3) -> dict:
     """
     if not 1 <= limit <= 20:
         raise HTTPException(422, "limit harus 1..20.")
-    if not run_lock.acquire(blocking=False):
-        raise HTTPException(409, "Riset masih berjalan.")
-    try:
+
+    def work() -> dict:
         source = DocumentSource(settings.research_library_dir, settings.source_cache_mode,
                                 settings.source_cache_ttl_seconds, settings.research_pdf_max_pages)
         scanner = Scanner(source, settings.scan_directory, {},
@@ -83,31 +131,32 @@ def trigger_scan(limit: int = 3) -> dict:
                 "candidates": len(report["candidates"]), "articles_checked": report["articles_checked"],
                 "announcements_matched": report["announcements_matched"], "failures": report["failures"][:10],
             })
-            # Same publication boundary as /pipeline/run: nothing reaches the dashboard ungated.
-            for event, outcome, _item in research_queue_items(settings, settings.scan_directory, limit):
-                provider_name = outcome.verdict.provider
-                screened = screen_outcome(event, None, outcome)
-                record_audit(session, stage="research", ticker=event.ticker,
-                             detail=outcome.model_dump(mode="json", exclude={"verdict", "evidence"}))
-                record_audit(session, stage="gate", ticker=event.ticker,
-                             detail={"status": screened.gate.status.value,
-                                     "rejected_terms": screened.gate.rejected_terms})
-                persist_screened_event(session, screened)
-                screened_count += 1
-    finally:
-        run_lock.release()
-    # Tanpa angka-angka ini "0 kandidat" tidak bisa dibedakan dari "sumbernya gagal diambil".
-    return {
-        "screened_count": screened_count,
-        "provider": provider_name,
-        "candidates_found": len(report["candidates"]),
-        "candidates_without_document": sum(1 for candidate in report["candidates"]
-                                           if candidate.get("status") == "needs_document"),
-        "articles_checked": report["articles_checked"],
-        "listing_pages_fetched": len(report["listing_pages"]),
-        "failures": report["failures"][:5],
-        "coverage_note": report["coverage_note"],
-    }
+            # closing(): engine dilepas walau persist di tengah loop gagal.
+            with closing(research_queue_items(settings, settings.scan_directory, limit)) as researched:
+                for index, (event, outcome, item) in enumerate(researched, start=1):
+                    run_events.publish("case", event.ticker,
+                                       {"phase": "start", "index": index, "total": limit,
+                                        "bucket": event.bucket.value})
+                    provider_name = outcome.verdict.provider
+                    screened = screen_outcome(event, None, outcome)
+                    record_audit(session, stage="research", ticker=event.ticker,
+                                 detail=outcome.model_dump(mode="json", exclude={"verdict", "evidence"}))
+                    record_audit(session, stage="gate", ticker=event.ticker,
+                                 detail={"status": screened.gate.status.value,
+                                         "rejected_terms": screened.gate.rejected_terms})
+                    # dedupe_key: publikasi ulang kandidat yang sama memperbarui kartunya,
+                    # bukan menambah kartu kedua untuk satu aksi korporasi.
+                    persist_screened_event(session, screened, dedupe_key=f"scan:{item['id']}")
+                    # Ditandai SETELAH commit. Kalau penyimpanan gagal, kandidat tetap belum
+                    # terpublikasi dan run berikutnya memulihkannya dari artefak tanpa model.
+                    mark_published(settings.scan_directory, item["id"])
+                    screened_count += 1
+                    run_events.publish("case", event.ticker,
+                                       {"phase": "end", "index": index, "total": limit,
+                                        "label": screened.verdict.label.value})
+        return summarize_scan(settings.scan_directory, report, screened_count, provider_name)
+
+    return start_job("scan", work)
 
 
 class ResearchRequest(BaseModel):
@@ -129,7 +178,9 @@ def research_single_case(request: ResearchRequest) -> dict:
         provider = build_provider(settings)
         client = SectorsClient(api_key=settings.sectors_api_key)
         event = CandidateEvent(**request.model_dump(), matched_keywords=[])
-        snapshot = snapshot_company(client, event.ticker, event.sub_sector, FreeFloatLookup(client))
+        snapshot = snapshot_company(client, event.ticker, event.sub_sector, FreeFloatLookup(client),
+                                    valuation_lookup=SubsectorValuationLookup(client),
+                                    with_filings=True)
         outcome = provider.research(event, snapshot, report=client.last_report, require_sectors=True)
         screened = screen_outcome(event, snapshot, outcome)
         with session_factory() as session:
@@ -146,6 +197,41 @@ def research_single_case(request: ResearchRequest) -> dict:
         if provider is not None:
             provider.close()
         run_lock.release()
+
+
+@app.get("/runs/active")
+def active_run() -> dict | None:
+    """Run yang sedang berjalan, supaya dashboard bisa menyambung lagi setelah halaman dimuat ulang."""
+    with session_factory() as session:
+        record = jobs.active(session)
+        return jobs.serialize(record) if record else None
+
+
+@app.get("/runs")
+def list_runs(limit: int = 10) -> list[dict]:
+    if not 1 <= limit <= 50:
+        raise HTTPException(422, "limit harus 1..50.")
+    with session_factory() as session:
+        return [jobs.serialize(record) for record in jobs.latest(session, limit)]
+
+
+@app.get("/runs/{job_id}")
+def get_run(job_id: str) -> dict:
+    with session_factory() as session:
+        record = session.get(RunJobRecord, job_id)
+        if record is None:
+            raise HTTPException(404, "Run tidak ditemukan.")
+        return jobs.serialize(record)
+
+
+@app.get("/run/stream")
+async def run_stream() -> StreamingResponse:
+    """Tahap pipeline langsung lewat SSE, menggantikan polling /audit oleh dashboard."""
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/health")

@@ -1,10 +1,5 @@
+import { LABEL_TEXT } from "../labels";
 import type { VerdictLabel } from "../types";
-
-const LABEL_TEXT: Record<VerdictLabel, string> = {
-  growth_catalyst: "Growth Catalyst",
-  structural_red_flag: "Structural Red Flag",
-  inconclusive: "Inconclusive",
-};
 
 export function VerdictBadge({ label, confidence }: { label: VerdictLabel; confidence: number }) {
   return (

@@ -40,6 +40,13 @@ class CompanySnapshot(BaseModel):
     free_float_rank: int | None = None
     free_float_universe: int | None = None
     quarterly_financials: list[dict] = Field(default_factory=list)
+    # PB agregat subsektor tahun terakhir, untuk membandingkan valuasi terhadap sebayanya
+    # alih-alih terhadap satu ambang tetap untuk seluruh pasar.
+    subsector_pb: float | None = None
+    subsector_slug: str | None = None
+    # Laporan keterbukaan kepemilikan menjelang aksi korporasi, untuk mendeteksi pengendali
+    # yang melepas saham saat publik diminta menyerap saham baru.
+    insider_sales: list[dict] = Field(default_factory=list)
 
 
 class VerdictLabel(StrEnum):
@@ -51,6 +58,9 @@ class VerdictLabel(StrEnum):
 class Verdict(BaseModel):
     label: VerdictLabel
     confidence: float = Field(ge=0.0, le=1.0)
+    # Satu paragraf yang dirangkai Python dari sinyal terverifikasi. Bukan keluaran model, dan ikut
+    # dipindai Compliance Gate seperti field prosa lainnya.
+    summary: str = ""
     red_flag_signals: list[str] = Field(default_factory=list)
     growth_signals: list[str] = Field(default_factory=list)
     rationale_bullets: list[str] = Field(default_factory=list)

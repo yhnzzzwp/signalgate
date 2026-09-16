@@ -17,13 +17,34 @@ export interface ScreenedEventSummary {
   detail: ScreenedEventDetail;
 }
 
+export interface ResearchFact {
+  id: string;
+  topic: string;
+  value: string;
+  claim: string;
+  quote: string;
+  evidence_id: string;
+  validator_status?: string | null;
+}
+
+export interface EvidenceSource {
+  id: string;
+  kind: string;
+  url: string;
+  title: string;
+  retrieved_at: string;
+}
+
 export interface ScreenedEventDetail {
   research?: {
     status: string;
     extraction_attempts: number;
+    review_rounds?: number;
     case_id: string | null;
     issues: string[];
-    evidence: { id: string; kind: string; url: string; title: string; retrieved_at: string }[];
+    facts?: ResearchFact[];
+    model_runs?: { role: string; model: string; seconds?: number; offloaded?: boolean }[];
+    evidence: EvidenceSource[];
   } | null;
   event: {
     ticker: string;
@@ -50,6 +71,7 @@ export interface ScreenedEventDetail {
   verdict: {
     label: VerdictLabel;
     confidence: number;
+    summary: string;
     red_flag_signals: string[];
     growth_signals: string[];
     rationale_bullets: string[];
@@ -71,12 +93,46 @@ export interface AuditLogEntry {
 }
 
 export interface ScanRunResult {
-  screened_count: number;
+  discovered: number;
+  new: number;
+  already_processed: number;
+  awaiting_publication: number;
+  ambiguous_documents: number;
+  without_document: number;
+  pending: number;
+  processed: number;
   provider: string | null;
-  candidates_found: number;
-  candidates_without_document: number;
   articles_checked: number;
   listing_pages_fetched: number;
-  failures: { url: string; error: string }[];
+  failed_sources: { url: string; error: string }[];
   coverage_note: string;
+}
+
+export interface PipelineRunResult {
+  screened_count: number;
+  provider: string;
+}
+
+export type RunStatus = "running" | "completed" | "failed";
+
+export interface RunJob {
+  id: string;
+  kind: "scan" | "pipeline";
+  status: RunStatus;
+  started_at: string;
+  finished_at: string | null;
+  result: (ScanRunResult & Partial<PipelineRunResult>) | null;
+  error: string | null;
+}
+
+export interface Page<T> {
+  results: T[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+export interface EventPage extends Page<ScreenedEventSummary> {
+  counts: Partial<Record<VerdictLabel, number>>;
 }

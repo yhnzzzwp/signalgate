@@ -2,7 +2,8 @@ import os
 import unittest
 from unittest.mock import patch
 
-from app.pipeline.sense import FreeFloatLookup, fetch_quarterly_financials, normalize_ticker, snapshot_company
+from app.pipeline.sense import (FreeFloatLookup, SubsectorValuationLookup, fetch_quarterly_financials,
+                                normalize_ticker, snapshot_company)
 from app.sectors.client import REPORT_SECTIONS, SectorsAPIError, SectorsClient
 
 
@@ -30,6 +31,10 @@ class FakeClient:
     def company_report(self, ticker, sections=None):
         self.calls.append(("report", ticker, sections))
         return self._reply("report")
+
+    def subsector_report(self, sub_sector, sections=("valuation",)):
+        self.calls.append(("subsector", sub_sector))
+        return self._reply(f"subsector:{sub_sector}")
 
 
 class SectorsClientTests(unittest.TestCase):
@@ -106,6 +111,40 @@ class FreeFloatLookupTests(unittest.TestCase):
         self.assertEqual(lookup.find("BCIC", ["banks"]), (0.0749, 1, 3))
 
 
+def valuation(**by_year):
+    return {"valuation": {"historical_valuation": {year: {"pb": pb} for year, pb in by_year.items()}}}
+
+
+class SubsectorValuationLookupTests(unittest.TestCase):
+    def test_takes_the_latest_year(self):
+        client = FakeClient(**{"subsector:banks": valuation(**{"2024": 1.4, "2026": 0.8, "2025": 1.1})})
+        self.assertEqual(SubsectorValuationLookup(client).find(["banks"]), (0.8, "banks"))
+
+    def test_one_call_per_subsector_for_the_whole_run(self):
+        client = FakeClient(**{"subsector:banks": valuation(**{"2026": 0.8})})
+        lookup = SubsectorValuationLookup(client)
+        lookup.find(["banks"])
+        lookup.find(["banks"])
+        self.assertEqual(client.calls, [("subsector", "banks")])
+
+    def test_falls_through_to_the_next_subsector_when_the_first_reports_nothing(self):
+        client = FakeClient(**{"subsector:banks": {}, "subsector:energy": valuation(**{"2026": 1.9})})
+        self.assertEqual(SubsectorValuationLookup(client).find(["banks", "energy"]), (1.9, "energy"))
+
+    def test_an_api_failure_degrades_to_no_comparison(self):
+        client = FakeClient(**{"subsector:banks": SectorsAPIError("HTTP 402")})
+        self.assertEqual(SubsectorValuationLookup(client).find(["banks"]), (None, None))
+
+    def test_a_nonpositive_peer_figure_is_refused_so_it_cannot_divide_by_zero(self):
+        client = FakeClient(**{"subsector:banks": valuation(**{"2026": 0.0})})
+        self.assertEqual(SubsectorValuationLookup(client).find(["banks"]), (None, None))
+
+    def test_no_subsector_means_no_call(self):
+        client = FakeClient()
+        self.assertEqual(SubsectorValuationLookup(client).find([]), (None, None))
+        self.assertEqual(client.calls, [])
+
+
 class QuarterlyFetchTests(unittest.TestCase):
     def test_orders_newest_quarter_first(self):
         client = FakeClient(quarterly=[{"date": "2025-12-31"}, {"date": "2026-06-30"}, {"date": "2026-03-31"}])
@@ -138,10 +177,18 @@ class SnapshotCompanyTests(unittest.TestCase):
         self.assertEqual(len(snapshot.quarterly_financials), 1)
         self.assertEqual(snapshot.pb_ratio, 2.5)
 
+    def test_attaches_the_subsector_comparison(self):
+        client = FakeClient(report=self.REPORT, quarterly=[],
+                            **{"subsector:energy": valuation(**{"2026": 0.9})})
+        snapshot = snapshot_company(client, "APEX", ["energy"], n_quarters=0,
+                                    valuation_lookup=SubsectorValuationLookup(client))
+        self.assertEqual((snapshot.subsector_pb, snapshot.subsector_slug), (0.9, "energy"))
+
     def test_works_without_a_lookup_and_skips_quarterly_when_asked(self):
         client = FakeClient(report=self.REPORT)
         snapshot = snapshot_company(client, "APEX", n_quarters=0)
         self.assertIsNone(snapshot.free_float)
+        self.assertIsNone(snapshot.subsector_pb)
         self.assertEqual(snapshot.quarterly_financials, [])
         self.assertEqual([call[0] for call in client.calls], ["report"])
 

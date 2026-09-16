@@ -3,9 +3,11 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.pipeline.audit import persist_screened_event, record_audit
+from app.pipeline.stream import run_events
 from app.pipeline.schema import ActionBucket, CandidateEvent, ScreenedEvent
 from app.pipeline.presentation import screen_outcome
-from app.pipeline.sense import FreeFloatLookup, collect_candidate_events, snapshot_company
+from app.pipeline.sense import (FreeFloatLookup, SubsectorValuationLookup, collect_candidate_events,
+                                snapshot_company)
 from app.sectors.client import SectorsClient
 
 BUCKET_PRIORITY = {
@@ -30,9 +32,14 @@ def run_pipeline(client: SectorsClient, provider, session: Session, max_events: 
                  detail={"event_count": len(events), "selected": [event.ticker for event in selected]})
 
     results: list[ScreenedEvent] = []
-    float_lookup = FreeFloatLookup(client)  # one free-float call per subsector, reused across events
-    for event in selected:
-        snapshot = snapshot_company(client, event.ticker, event.sub_sector, float_lookup)
+    total = len(selected)
+    # One call per subsector for each lookup, reused across every event in this run.
+    float_lookup, valuation_lookup = FreeFloatLookup(client), SubsectorValuationLookup(client)
+    for index, event in enumerate(selected, start=1):
+        run_events.publish("case", event.ticker,
+                           {"phase": "start", "index": index, "total": total, "bucket": event.bucket.value})
+        snapshot = snapshot_company(client, event.ticker, event.sub_sector, float_lookup,
+                                    valuation_lookup=valuation_lookup, with_filings=True)
         outcome = provider.research(event, snapshot, report=client.last_report, require_sectors=True)
         record_audit(session, stage="research", ticker=event.ticker,
                      detail=outcome.model_dump(mode="json", exclude={"verdict", "evidence"}))
@@ -47,5 +54,9 @@ def run_pipeline(client: SectorsClient, provider, session: Session, max_events: 
 
         persist_screened_event(session, screened)
         results.append(screened)
+        # Diterbitkan SETELAH commit: kasus baru dihitung selesai ketika kartunya benar-benar ada.
+        run_events.publish("case", event.ticker,
+                           {"phase": "end", "index": index, "total": total,
+                            "label": screened.verdict.label.value})
 
     return results

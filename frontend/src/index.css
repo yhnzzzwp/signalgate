@@ -301,3 +301,342 @@ body {
   border-radius: 4px;
   background: var(--surface-raised);
 }
+
+/* ---- Progres run: dibaca dari audit trail, bukan animasi berbasis waktu ---- */
+
+.run-progress {
+  background: var(--surface, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+}
+
+.run-progress__header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.run-progress__spinner {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid rgba(120, 160, 255, 0.25);
+  border-top-color: var(--accent);
+  animation: run-progress-spin 0.9s linear infinite;
+}
+
+@keyframes run-progress-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.run-progress__meta {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.run-progress__stages {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 16px 0 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.run-progress__stage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  opacity: 0.55;
+}
+
+.run-progress__stage--done,
+.run-progress__stage--active {
+  opacity: 1;
+}
+
+.run-progress__stage--active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.run-progress__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.run-progress__stage--active .run-progress__dot {
+  animation: run-progress-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes run-progress-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.run-progress__note {
+  margin: 14px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Hormati preferensi sistem: gerakan dimatikan, informasinya tetap utuh. */
+@media (prefers-reduced-motion: reduce) {
+  .run-progress__spinner,
+  .run-progress__stage--active .run-progress__dot {
+    animation: none;
+  }
+}
+
+/* ---- Live timeline: satu baris per tahap, didorong backend lewat SSE ---- */
+
+.run-progress__headline {
+  min-width: 0;
+}
+
+.run-progress__link {
+  margin-left: 10px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.run-progress__link--on {
+  color: var(--growth, #6ee7a8);
+}
+
+.run-progress__link--off {
+  color: var(--text-muted);
+}
+
+.run-timeline {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 12px 0 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  max-height: 208px;
+  overflow-y: auto;
+}
+
+.run-timeline__row {
+  display: grid;
+  grid-template-columns: 62px 56px minmax(120px, 1fr) minmax(0, 1.4fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  animation: run-timeline-enter 0.28s ease-out;
+}
+
+.run-timeline__row:last-child {
+  border-bottom: none;
+}
+
+@keyframes run-timeline-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.run-timeline__time {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.run-timeline__ticker {
+  font-weight: 600;
+}
+
+.run-timeline__stage {
+  color: var(--accent);
+}
+
+.run-timeline__detail {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .run-timeline__row {
+    grid-template-columns: 62px 56px 1fr;
+  }
+
+  .run-timeline__detail {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-timeline__row {
+    animation: none;
+  }
+}
+
+/* Rangkuman satu paragraf: jalan masuk pembaca sebelum daftar sinyal. */
+.event-card__summary {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+/* ---- Rincian pemeriksaan pada kartu ---- */
+
+.event-card__review {
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.event-card__review > summary {
+  cursor: pointer;
+  color: var(--accent);
+  padding: 4px 0;
+}
+
+.event-card__issues,
+.event-card__facts,
+.event-card__sources {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.event-card__issues li {
+  color: var(--text-muted);
+  line-height: 1.55;
+  padding-left: 12px;
+  border-left: 2px solid var(--red-flag);
+}
+
+.event-card__fact {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 2px solid var(--text-muted);
+}
+
+.event-card__fact--supported { border-left-color: var(--growth, #6ee7a8); }
+.event-card__fact--contradicted { border-left-color: var(--red-flag); }
+
+.event-card__fact-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.event-card__fact-topic { font-weight: 600; }
+.event-card__fact-value { color: var(--accent); }
+
+.event-card__fact-status,
+.event-card__source-meta,
+.event-card__evidence-id {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.event-card__fact-claim { margin: 6px 0 0; }
+
+.event-card__quote {
+  margin: 6px 0 0;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--text-muted);
+  font-style: italic;
+  line-height: 1.55;
+}
+
+.event-card__sources li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ---- Paging & jejak audit ---- */
+
+.dashboard__paging {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.audit-trail__list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.audit-trail__item {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.audit-trail__row {
+  display: grid;
+  grid-template-columns: 150px 120px 56px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.audit-trail__time { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.audit-trail__ticker { font-weight: 600; }
+.audit-trail__summary { color: var(--text-muted); }
+
+.audit-trail__raw > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding-top: 6px;
+}
+
+.audit-trail__raw pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 720px) {
+  .audit-trail__row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .audit-trail__summary {
+    grid-column: 1 / -1;
+  }
+}

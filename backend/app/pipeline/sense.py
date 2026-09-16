@@ -84,6 +84,41 @@ class FreeFloatLookup:
         return None, None, None
 
 
+class SubsectorValuationLookup:
+    """PB agregat subsektor, satu panggilan per subsektor untuk satu run (1 kredit per seksi).
+
+    Bentuknya berbeda dari company report: `historical_valuation` di sini dict berkunci tahun,
+    bukan list. Tahun terbesar yang dipakai.
+    """
+
+    def __init__(self, client: SectorsClient) -> None:
+        self.client = client
+        self._by_sub_sector: dict[str, float | None] = {}
+
+    def _latest_pb(self, sub_sector: str) -> float | None:
+        try:
+            report = self.client.subsector_report(sub_sector, sections=("valuation",))
+        except Exception:
+            return None
+        history = ((report or {}).get("valuation") or {}).get("historical_valuation") or {}
+        years = [year for year in history if str(year).isdigit()]
+        if not years:
+            return None
+        value = (history[max(years, key=int)] or {}).get("pb")
+        return float(value) if isinstance(value, (int, float)) and value > 0 else None
+
+    def find(self, sub_sectors: Sequence[str]) -> tuple[float | None, str | None]:
+        """Return (subsector_pb, subsector_slug) for the first subsector that reports one."""
+        for sub_sector in sub_sectors:
+            if not sub_sector:
+                continue
+            if sub_sector not in self._by_sub_sector:
+                self._by_sub_sector[sub_sector] = self._latest_pb(sub_sector)
+            if self._by_sub_sector[sub_sector] is not None:
+                return self._by_sub_sector[sub_sector], sub_sector
+        return None, None
+
+
 def fetch_quarterly_financials(client: SectorsClient, ticker: str, n_quarters: int = 4) -> list[dict]:
     """Newest quarter first. Bills 1 credit per quarter, so the window stays deliberately small."""
     try:
@@ -95,12 +130,31 @@ def fetch_quarterly_financials(client: SectorsClient, ticker: str, n_quarters: i
     return sorted((row for row in rows if isinstance(row, dict)), key=lambda row: row.get("date") or "", reverse=True)
 
 
+def fetch_insider_sales(client: SectorsClient, ticker: str, limit: int = 30) -> list[dict]:
+    """Penjualan oleh insider dan investor korporasi, terbaru dulu. 1 kredit.
+
+    Hanya arah jual yang diminta: yang dicari adalah pengendali yang melepas posisi menjelang
+    penggalangan dana, bukan seluruh riwayat kepemilikan.
+    """
+    try:
+        payload = client.filings(ticker, limit=limit, transaction_type="sell")
+    except Exception:
+        return []
+    rows = (payload or {}).get("results") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)
+            and row.get("holder_type") in {"insider", "corporate-investor"}]
+
+
 def snapshot_company(
     client: SectorsClient,
     ticker: str,
     sub_sectors: Sequence[str] = (),
     float_lookup: FreeFloatLookup | None = None,
     n_quarters: int = 4,
+    valuation_lookup: "SubsectorValuationLookup | None" = None,
+    with_filings: bool = False,
 ) -> CompanySnapshot | None:
     try:
         report = client.company_report(ticker)
@@ -114,11 +168,17 @@ def snapshot_company(
     free_float, rank, universe = (
         float_lookup.find(ticker, sub_sectors) if float_lookup is not None else (None, None, None)
     )
+    subsector_pb, subsector_slug = (
+        valuation_lookup.find(sub_sectors) if valuation_lookup is not None else (None, None)
+    )
     return snapshot.model_copy(update={
         "free_float": free_float,
         "free_float_rank": rank,
         "free_float_universe": universe,
         "quarterly_financials": fetch_quarterly_financials(client, ticker, n_quarters) if n_quarters else [],
+        "subsector_pb": subsector_pb,
+        "subsector_slug": subsector_slug,
+        "insider_sales": fetch_insider_sales(client, ticker) if with_filings else [],
     })
 
 

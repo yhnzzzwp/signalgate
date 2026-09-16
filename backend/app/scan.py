@@ -6,7 +6,7 @@ listing pages and ticker universe supplied, never reported as a complete IDX cra
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -19,6 +19,7 @@ from app.llm.factory import build_provider
 from app.pipeline.hypothesize import (CONTROL_CHANGE_KEYWORDS, NON_PREEMPTIVE_KEYWORDS,
                                       RIGHTS_ISSUE_KEYWORDS, classify)
 from app.pipeline.schema import ActionBucket, CandidateEvent
+from app.research.models import ResearchOutcome
 from app.research.documents import DocumentSource
 
 STOP_TICKERS = {'HMET', 'PMTH', 'PMHM', 'RUPS', 'BEI', 'OJK', 'IDX', 'IHSG', 'IPO', 'BUMN', 'UMKM',
@@ -43,8 +44,77 @@ KEYWORDS = tuple(dict.fromkeys((*DISCOVERY_KEYWORDS, *PRIORITISED_BUCKET_KEYWORD
 TITLE_TICKER = re.compile(r'\[\s*([A-Z0-9]{4})\s*\]\s*$')
 # Tautan halaman berikutnya hanya berisi penandanya; judul berita yang diawali angka bukan paginasi.
 PAGE_LINK = re.compile(r'(?:next|berikutnya|selanjutnya)\W*|\d{1,3}', re.I)
-ATTACHMENT_NAME = re.compile(r'^\d{8}_([A-Z0-9]{4})_.+\.(?:pdf|xlsx|xls|docx|doc)$')
+ATTACHMENT_NAME = re.compile(r'^(\d{8})_([A-Z0-9]{4})_.+\.(?:pdf|xlsx|xls|docx|doc)$')
+# Nomor pengumuman IDX pada nama lampiran: `..._32148872_lamp1.pdf`. Inilah identitas aksinya.
+# Tanggal saja tidak cukup: satu emiten bisa menerbitkan beberapa pengumuman berbeda di hari yang
+# sama -- IDEA 16/09/2026 punya 32148872 (fakta material) dan 32148902 (pengumuman RUPS).
+ANNOUNCEMENT_NUMBER = re.compile(r'_(\d{4,})_lamp\d+\.', re.I)
 IDX_HOSTS = ('idx.id', 'idx.co.id')
+
+# Kandidat yang sudah menghasilkan putusan tidak diriset ulang: menekan tombol scan dua kali dulu
+# mengulang pekerjaan menit-menitan dan menyimpan baris duplikat ke dashboard. `needs_review` tetap
+# terhitung sebagai putusan -- itu justru hasil paling umum.
+SETTLED_STATUSES = frozenset({'completed', 'needs_review'})
+
+# Kegagalan lingkungan layak dicoba lagi, tetapi tidak boleh terus memakan jatah `limit` sehingga
+# kandidat yang belum pernah dicoba tidak pernah kebagian giliran. Jeda menaik plus batas percobaan.
+RETRY_BACKOFF_SECONDS = (300, 1800, 7200)
+MAX_ATTEMPTS = len(RETRY_BACKOFF_SECONDS) + 1
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def queue_path(directory, item_id):
+    return Path(directory) / 'queue' / f'{item_id}.json'
+
+
+def retry_schedule(attempt_count):
+    """Kapan boleh dicoba lagi setelah `attempt_count` percobaan; None berarti berhenti mencoba."""
+    if attempt_count >= MAX_ATTEMPTS:
+        return None
+    return (_now() + timedelta(seconds=RETRY_BACKOFF_SECONDS[attempt_count - 1])).isoformat()
+
+
+def is_due(item, now=None):
+    """Kandidat gagal hanya mengambil giliran ketika jeda ulangnya sudah lewat."""
+    schedule = item.get('next_retry_at')
+    if schedule is None:
+        return item.get('attempt_count', 0) < MAX_ATTEMPTS
+    try:
+        return datetime.fromisoformat(schedule) <= (now or _now())
+    except (TypeError, ValueError):
+        return True
+
+
+def needs_publication(item):
+    """Sudah berputusan tetapi belum pernah sampai ke database."""
+    return item.get('status') in SETTLED_STATUSES and not item.get('published_at')
+
+
+def mark_published(directory, item_id):
+    """Dipanggil pemakai SETELAH commit database, bukan oleh peneliti.
+
+    Menandai selesai sebelum kartunya tersimpan berarti hasil yang hilang saat commit gagal tidak
+    akan pernah dipulihkan: run berikutnya melewatinya karena statusnya sudah berputusan.
+    """
+    path = queue_path(directory, item_id)
+    item = json.loads(path.read_text())
+    item['published_at'] = _now().isoformat()
+    write_json(path, item)
+    return item
+
+
+def load_outcome(settings, case_id):
+    """Muat ulang putusan dari artefak kasus, supaya publikasi ulang tidak memanggil model lagi."""
+    if not case_id:
+        return None
+    path = Path(settings.research_cases_dir) / case_id / 'decision.json'
+    try:
+        return ResearchOutcome.model_validate_json(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
 
 
 def write_json(path, data):
@@ -53,6 +123,11 @@ def write_json(path, data):
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2))
     temporary.replace(path)
+
+
+def _iso_date(compact):
+    """'20260916' -> '2026-09-16'; nama lampiran IDX adalah satu-satunya tanggal yang kita punya."""
+    return f"{compact[:4]}-{compact[4:6]}-{compact[6:8]}" if compact and len(compact) == 8 else ""
 
 
 def matches(text):
@@ -80,14 +155,20 @@ def announcement_groups(links):
         title = TITLE_TICKER.search(text)
         attachment = ATTACHMENT_NAME.match(text)
         if title:
-            current = {'ticker': title.group(1), 'title': text, 'urls': [link.url], 'attachments': []}
+            current = {'ticker': title.group(1), 'title': text, 'urls': [link.url], 'attachments': [],
+                       'dates': set(), 'numbers': set()}
             groups.append(current)
         elif attachment:
-            if current is None or current['ticker'] != attachment.group(1):
-                current = {'ticker': attachment.group(1), 'title': text, 'urls': [], 'attachments': []}
+            if current is None or current['ticker'] != attachment.group(2):
+                current = {'ticker': attachment.group(2), 'title': text, 'urls': [], 'attachments': [],
+                           'dates': set(), 'numbers': set()}
                 groups.append(current)
             current['urls'].append(link.url)
             current['attachments'].append(text)
+            current['dates'].add(attachment.group(1))
+            number = ANNOUNCEMENT_NUMBER.search(text)
+            if number:
+                current['numbers'].add(number.group(1))
         else:
             current = None
     return groups
@@ -133,16 +214,43 @@ class Scanner:
         report['candidates'].append(entry)
 
     def attach_announcement_documents(self, report, announcements):
+        """Pasangkan artikel dengan lampiran pengumuman IDX untuk ticker yang sama.
+
+        Kecocokan ticker dan satu kata kunci saja tidak cukup: satu emiten bisa punya dua rights
+        issue di tahun berbeda, dan lampiran keduanya akan tergabung ke satu kasus. Kutipannya
+        memang ada di dokumen, tetapi menjelaskan aksi yang lain. Tanggal pengumuman pada nama
+        lampiran (`YYYYMMDD_TICKER_...`) dipakai sebagai identitas aksi; ketika ambigu, asosiasinya
+        tidak dinyatakan selesai melainkan diserahkan ke pemeriksaan manusia.
+        """
         for entry in report['candidates']:
             if entry['status'] != 'needs_document':
                 continue
             wanted = set(entry['event']['matched_keywords'])
-            documents = [url for group, keywords, _ in announcements
-                         if group['ticker'] == entry['event']['ticker'] and wanted & set(keywords)
-                         for url in pdf_links(group['urls'])]
+            matching = [group for group, keywords, _ in announcements
+                        if group['ticker'] == entry['event']['ticker'] and wanted & set(keywords)]
+            if not matching:
+                continue
+            dates = {date for group in matching for date in group.get('dates') or ()}
+            numbers = {number for group in matching for number in group.get('numbers') or ()}
+            # Identitas aksi adalah nomor pengumuman, bukan tanggalnya. Satu pengumuman boleh punya
+            # beberapa lampiran; beberapa pengumuman hanya boleh digabung bila nomornya sama.
+            # Tanggal sengaja TIDAK dipakai sebagai identitas: dua aksi berbeda di hari yang sama
+            # akan tergabung, dan kutipan yang benar berakhir menjelaskan aksi yang salah.
+            if len(numbers) > 1 or (len(matching) > 1 and len(numbers) != 1):
+                entry.update(status='ambiguous_documents', document_dates=sorted(dates),
+                             document_numbers=sorted(numbers),
+                             documents_from='idx_announcement_ambiguous',
+                             document_candidates=len(matching))
+                write_json(self.directory / 'queue' / f"{entry['id']}.json", entry)
+                continue
+            documents = [url for group in matching for url in pdf_links(group['urls'])]
             if documents:
                 entry.update(pdf_urls=list(dict.fromkeys(documents)), status='pending_pdf_review',
-                             documents_from='idx_announcement_same_ticker')
+                             documents_from='idx_announcement_same_number' if numbers
+                             else 'idx_announcement_single_group',
+                             document_dates=sorted(dates), document_numbers=sorted(numbers))
+                if dates and not entry['event'].get('published_at'):
+                    entry['event']['published_at'] = _iso_date(next(iter(dates)))
                 write_json(self.directory / 'queue' / f"{entry['id']}.json", entry)
 
     def discover(self, sources):
@@ -225,40 +333,108 @@ def document_map(documents):
     return mappings
 
 
-def research_queue_items(settings, directory, limit, documents=()):
+def research_queue_items(settings, directory, limit, documents=(), retry=False):
     """Yield (event, outcome, item) per kandidat antrean. Nol permintaan Sectors.
 
     Dipakai CLI maupun endpoint /scan/run, supaya keduanya meriset dengan cara yang sama persis.
     Pemanggil wajib menghabiskan generator ini agar engine ditutup tepat waktu.
     """
     mappings = document_map(documents)
-    engine = build_provider(settings)
+    engine = None
     try:
         processed = 0
-        for path in sorted((Path(directory) / 'queue').glob('*.json')):
-            item = json.loads(path.read_text())
-            if item['status'] == 'completed':
-                continue
+        for path, item in eligible_items(directory, retry):
             if processed >= limit:
                 break
             event = CandidateEvent.model_validate(item['event'])
+
+            # Sudah berputusan tetapi belum tersimpan: pulihkan dari artefak, jangan panggil model lagi.
+            if needs_publication(item) and not retry:
+                recovered = load_outcome(settings, item.get('case_id'))
+                if recovered is not None:
+                    processed += 1
+                    yield event, recovered, item
+                    continue
+
+            if engine is None:
+                engine = build_provider(settings)
             pdfs = mappings.get(event.ticker, []) + item['pdf_urls']
-            if not pdfs:
-                continue
+            # Kandidat tanpa PDF dulu dilewati diam-diam, sehingga tiga kandidat menghasilkan satu kasus.
+            # Artikel sumbernya sendiri adalah bukti yang sah: engine selalu mengumpulkan event.source_url.
+            # PDF tetap diwajibkan terbaca bila memang ada, supaya lampiran rusak tidak lolos begitu saja.
             engine.settings = settings.model_copy(update={'research_source_urls':list(dict.fromkeys(pdfs))})
-            outcome = engine.research(event, None, require_pdf=True, require_sectors=False)
+            outcome = engine.research(event, None, require_pdf=bool(pdfs), require_sectors=False)
+            attempts = item.get('attempt_count', 0) + 1
             item.update(status=outcome.status, case_id=outcome.case_id, label=outcome.verdict.label.value,
-                        document_status=outcome.document_status, processed_at=datetime.now(timezone.utc).isoformat())
+                        document_status=outcome.document_status, processed_at=_now().isoformat(),
+                        attempt_count=attempts, last_attempt_at=_now().isoformat(),
+                        next_retry_at=None if outcome.status in SETTLED_STATUSES else retry_schedule(attempts))
+            # `published_at` sengaja TIDAK disetel di sini: pemakailah yang menandainya setelah commit.
             write_json(path, item)
             processed += 1
             yield event, outcome, item
     finally:
-        engine.close()
+        if engine is not None:
+            engine.close()
 
 
-def research_queue(settings, directory, limit, documents):
+def eligible_items(directory, retry=False):
+    """Kandidat yang boleh diambil giliran, yang belum pernah dicoba lebih dulu.
+
+    Dulu berkas hanya dibaca berurutan nama hash, sehingga kandidat yang selalu gagal terus memakan
+    jatah `limit` dan kandidat baru tidak pernah kebagian. Urutannya sekarang: percobaan paling
+    sedikit dulu, lalu yang paling lama menunggu.
+    """
+    rows = []
+    for path in sorted((Path(directory) / 'queue').glob('*.json')):
+        try:
+            item = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        settled = item.get('status') in SETTLED_STATUSES
+        if settled and item.get('published_at') and not retry:
+            continue
+        if not settled and not retry and not is_due(item):
+            continue
+        rows.append((path, item))
+    # Publikasi tertunda didahulukan: murah, tanpa model, dan memulihkan hasil yang hilang.
+    rows.sort(key=lambda row: (not needs_publication(row[1]), row[1].get('attempt_count', 0),
+                               row[1].get('last_attempt_at') or ''))
+    return rows
+
+
+def summarize_scan(directory, report, processed, provider=None):
+    """Bedakan penemuan baru, antrean lama, dan kandidat yang sudah selesai.
+
+    Endpoint meriset seluruh antrean tersimpan sementara `candidates_found` berasal dari discovery
+    kali ini, sehingga "N kasus dari M kandidat" bisa tidak sebanding dan nol hasil terbaca seperti
+    kegagalan. Angka-angka di bawah menjawab pertanyaan yang sebenarnya: apakah ada yang baru,
+    apakah semuanya memang sudah pernah diproses, dan apakah ada sumber yang gagal diambil.
+    """
+    discovered = report.get('candidates') or []
+    created_at = report.get('created_at')
+    settled = [item for item in discovered if item.get('status') in SETTLED_STATUSES]
+    return {
+        'discovered': len(discovered),
+        'new': sum(1 for item in discovered if item.get('first_seen') == created_at),
+        'already_processed': sum(1 for item in settled if item.get('published_at')),
+        'awaiting_publication': sum(1 for item in settled if not item.get('published_at')),
+        'ambiguous_documents': sum(1 for item in discovered if item.get('status') == 'ambiguous_documents'),
+        'without_document': sum(1 for item in discovered if item.get('status') == 'needs_document'),
+        'pending': len(eligible_items(directory)),
+        'processed': processed,
+        'provider': provider,
+        'articles_checked': report.get('articles_checked', 0),
+        'listing_pages_fetched': len(report.get('listing_pages') or []),
+        # Sumber yang gagal tetap dilaporkan walau ada hasil: cakupan parsial harus terlihat.
+        'failed_sources': (report.get('failures') or [])[:5],
+        'coverage_note': report.get('coverage_note', ''),
+    }
+
+
+def research_queue(settings, directory, limit, documents, retry=False):
     processed = 0
-    for _event, _outcome, item in research_queue_items(settings, directory, limit, documents):
+    for _event, _outcome, item in research_queue_items(settings, directory, limit, documents, retry):
         print(json.dumps({key:item.get(key) for key in ('id','status','case_id','label','document_status')}), flush=True)
         processed += 1
     return processed
@@ -275,6 +451,7 @@ def main():
     cache_mode.add_argument('--refresh', action='store_true')
     parser.add_argument('--limit', type=int, default=3, help='Jumlah kandidat yang dianalisis; discovery memakai SCAN_MAX_ARTICLES')
     parser.add_argument('--document', action='append', default=[], help='TICKER=URL PDF untuk kandidat tanpa tautan dokumen')
+    parser.add_argument('--retry', action='store_true', help='riset ulang kandidat yang sudah berputusan')
     args = parser.parse_args()
     if args.limit < 1 or args.limit > 20:
         parser.error('--limit harus 1..20')
@@ -294,7 +471,7 @@ def main():
         print(json.dumps({k:v for k,v in report.items() if k != 'candidates'}, ensure_ascii=False, indent=2))
         print(f"Kandidat: {len(report['candidates'])}; lihat {args.directory / 'latest.json'}")
     else:
-        print(f"Kasus diproses: {research_queue(settings, args.directory, args.limit, args.document)}")
+        print(f"Kasus diproses: {research_queue(settings, args.directory, args.limit, args.document, args.retry)}")
 
 
 if __name__ == '__main__':

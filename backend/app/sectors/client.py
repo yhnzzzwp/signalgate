@@ -79,6 +79,16 @@ class SectorsClient:
         """Full quarterly statements, newest first. Costs 1 credit per quarter returned."""
         return self.get(f"financials/quarterly/{ticker}", n_quarters=n_quarters)
 
+    def filings(self, ticker: str, limit: int = 30, transaction_type: str | None = None,
+                holder_type: str | None = None) -> dict[str, Any]:
+        """Laporan keterbukaan kepemilikan IDX (insider dan pemegang saham besar). 1 kredit."""
+        return self.get("filings", symbol=ticker, limit=limit,
+                        transaction_type=transaction_type, holder_type=holder_type)
+
+    def subsector_report(self, sub_sector: str, sections: Sequence[str] = ("valuation",)) -> dict[str, Any]:
+        """Subsector aggregates. Costs 1 credit per section; the default asks for the one we read."""
+        return self.get(f"subsector/report/{sub_sector}", sections=",".join(sections))
+
     def daily(self, ticker: str, start: str | None = None, end: str | None = None) -> list[dict[str, Any]]:
         return self.get(f"daily/{ticker}", start=start, end=end)
 
