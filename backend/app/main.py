@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from contextlib import closing
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.routes import register_routes
+from app.api.workflow_routes import register_workflow_routes
 from app.config import get_settings, sectors_block_reason
 from app.db.models import RunJobRecord
 from app.db.session import build_session_factory
@@ -23,6 +24,7 @@ from app.pipeline.stream import event_source, run_events
 from app.research.documents import DocumentSource
 from app.scan import Scanner, mark_published, research_queue_items, summarize_scan
 from app.sectors.client import SectorsClient, SectorsAPIError
+from app.workflow.runner import WorkflowRunner
 
 app = FastAPI(title="SignalGate", version="0.3.0")
 
@@ -37,6 +39,23 @@ settings = get_settings()
 session_factory = build_session_factory(settings)
 register_routes(app, session_factory)
 run_lock = Lock()
+# Event pembatalan per run laporan, hanya untuk run yang berjalan di proses ini.
+workflow_cancellations: dict[str, Event] = {}
+
+
+def workflow_progress(phase: str, node: str, detail: dict) -> None:
+    """Progres disimpan sebelum operasinya mulai, lalu didorong ke SSE; refresh halaman tetap utuh."""
+    payload = {"phase": phase, "node": node, **detail}
+    if phase == "start":
+        with session_factory() as session:
+            record_audit(session, stage="workflow", ticker=detail.get("ticker", "*"), detail=payload)
+    else:
+        run_events.publish("workflow", detail.get("ticker", "*"), payload)
+
+
+workflow_runner = WorkflowRunner(settings, session_factory,
+                                 client_factory=lambda: SectorsClient(api_key=settings.sectors_api_key),
+                                 progress=workflow_progress)
 
 with session_factory() as _session:
     _stranded = jobs.release_stale(_session)
@@ -67,6 +86,8 @@ def start_job(kind: str, work) -> dict:
         run_lock.release()
         raise
     run_events.set_run(payload["id"])
+    # Sebelum thread mulai: run yang gagal seketika tidak boleh menutup dirinya sebelum dibuka.
+    run_events.publish("run", "*", {"phase": "start", "kind": kind})
 
     def runner() -> None:
         try:
@@ -84,7 +105,6 @@ def start_job(kind: str, work) -> dict:
             run_lock.release()
 
     Thread(target=runner, name=f"signalgate-{kind}", daemon=True).start()
-    run_events.publish("run", "*", {"phase": "start", "kind": kind})
     return payload
 
 
@@ -98,8 +118,9 @@ def trigger_pipeline() -> dict:
             provider = build_provider(settings)
             client = SectorsClient(api_key=settings.sectors_api_key)
             with session_factory() as session:
-                results = run_pipeline(client, provider, session, settings.pipeline_max_events)
-            return {"screened_count": len(results), "provider": provider.name}
+                run = run_pipeline(client, provider, session, settings.pipeline_max_events)
+            return {"screened_count": len(run.results), "already_processed": run.already_processed,
+                    "provider": provider.name}
         except SectorsAPIError as error:
             raise RuntimeError("Sectors tidak dapat dihubungi; periksa key, kuota, atau jaringan.") from error
         finally:
@@ -131,12 +152,18 @@ def trigger_scan(limit: int = 3) -> dict:
                 "candidates": len(report["candidates"]), "articles_checked": report["articles_checked"],
                 "announcements_matched": report["announcements_matched"], "failures": report["failures"][:10],
             })
+            position = {"index": 0, "total": 0}
+
+            def announce(event, index, total):
+                position.update(index=index, total=total)
+                run_events.publish("case", event.ticker,
+                                   {"phase": "start", "index": index, "total": total,
+                                    "bucket": event.bucket.value})
+
             # closing(): engine dilepas walau persist di tengah loop gagal.
-            with closing(research_queue_items(settings, settings.scan_directory, limit)) as researched:
-                for index, (event, outcome, item) in enumerate(researched, start=1):
-                    run_events.publish("case", event.ticker,
-                                       {"phase": "start", "index": index, "total": limit,
-                                        "bucket": event.bucket.value})
+            with closing(research_queue_items(settings, settings.scan_directory, limit,
+                                              on_start=announce)) as researched:
+                for event, outcome, item in researched:
                     provider_name = outcome.verdict.provider
                     screened = screen_outcome(event, None, outcome)
                     record_audit(session, stage="research", ticker=event.ticker,
@@ -149,11 +176,10 @@ def trigger_scan(limit: int = 3) -> dict:
                     persist_screened_event(session, screened, dedupe_key=f"scan:{item['id']}")
                     # Ditandai SETELAH commit. Kalau penyimpanan gagal, kandidat tetap belum
                     # terpublikasi dan run berikutnya memulihkannya dari artefak tanpa model.
-                    mark_published(settings.scan_directory, item["id"])
+                    mark_published(settings.scan_directory, item["id"], item.get("case_id"))
                     screened_count += 1
                     run_events.publish("case", event.ticker,
-                                       {"phase": "end", "index": index, "total": limit,
-                                        "label": screened.verdict.label.value})
+                                       {"phase": "end", **position, "label": screened.verdict.label.value})
         return summarize_scan(settings.scan_directory, report, screened_count, provider_name)
 
     return start_job("scan", work)
@@ -225,10 +251,16 @@ def get_run(job_id: str) -> dict:
 
 
 @app.get("/run/stream")
-async def run_stream() -> StreamingResponse:
-    """Tahap pipeline langsung lewat SSE, menggantikan polling /audit oleh dashboard."""
+async def run_stream(request: Request) -> StreamingResponse:
+    """Tahap pipeline langsung lewat SSE, menggantikan polling /audit oleh dashboard.
+
+    Klien yang baru tersambung (refresh halaman) menerima riwayat run yang sedang berjalan lebih
+    dulu. EventSource yang menyambung ulang mengirim `Last-Event-ID`, jadi hanya sisanya yang dikirim.
+    """
+    header = request.headers.get("last-event-id", "")
+    after = int(header) if header.isdigit() else None
     return StreamingResponse(
-        event_source(),
+        event_source(last_event_id=after),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
@@ -237,3 +269,7 @@ async def run_stream() -> StreamingResponse:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+# Lambda, bukan referensi langsung: gerbang Sectors dibaca ulang tiap permintaan (dan bisa ditambal test).
+register_workflow_routes(app, workflow_runner, start_job, lambda: require_sectors_key(), workflow_cancellations)

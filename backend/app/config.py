@@ -45,6 +45,18 @@ class Settings(BaseSettings):
     research_review_rounds: int = Field(default=1, ge=1, le=3)
     research_validator_mode: Literal["strict", "lenient"] = "strict"
     research_cache_ttl_seconds: int = Field(default=3600, ge=0, le=86400)
+    # Graph laporan empat panel. Prompt-nya kecil (metrik dan artikel terpilih), jadi konteksnya
+    # sengaja lebih kecil daripada jalur riset dokumen PDF yang butuh 16k.
+    workflow_directory: Path = REPO_ROOT / "data" / "workflow"
+    workflow_analyst_model: str | None = None
+    workflow_reviewer_model: str | None = None
+    workflow_num_ctx: int = Field(default=8192, ge=4096, le=131072)
+    workflow_num_predict: int = Field(default=1024, ge=256, le=8192)
+    workflow_quarters: int = Field(default=5, ge=2, le=12)
+    workflow_price_calendar_days: int = Field(default=180, ge=30, le=730)
+    workflow_news_days: int = Field(default=90, ge=7, le=365)
+    workflow_news_limit: int = Field(default=30, ge=1, le=30)
+    workflow_deadline_seconds: int = Field(default=1800, ge=60, le=14400)
     research_max_pages: int = Field(default=4, ge=1, le=12)
     research_context_chars: int = Field(default=3000, ge=500, le=12000)
     research_library_dir: Path = REPO_ROOT / "data" / "library"

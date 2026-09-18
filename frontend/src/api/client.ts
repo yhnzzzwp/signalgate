@@ -1,4 +1,11 @@
-import type { AuditLogEntry, EventPage, Page, RunJob } from "../types";
+import type {
+  AuditLogEntry,
+  EventPage,
+  Page,
+  RunJob,
+  WorkflowReport,
+  WorkflowRun,
+} from "../types";
 
 export const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -56,7 +63,9 @@ export function fetchEvents(options: EventQuery = {}): Promise<EventPage> {
   return request(`/events${query({ ...options })}`);
 }
 
-export function fetchAuditLog(options: { limit?: number; ticker?: string } = {}): Promise<Page<AuditLogEntry>> {
+export function fetchAuditLog(
+  options: { limit?: number; offset?: number; ticker?: string } = {},
+): Promise<Page<AuditLogEntry>> {
   return request(`/audit${query({ ...options })}`);
 }
 
@@ -76,4 +85,36 @@ export function fetchActiveRun(): Promise<RunJob | null> {
 
 export function fetchRun(jobId: string): Promise<RunJob> {
   return request(`/runs/${jobId}`);
+}
+
+/** Laporan empat panel. Mode replay memakai snapshot run lain, jadi tidak memakai kredit Sectors. */
+export function startWorkflowRun(body: {
+  ticker?: string;
+  horizon?: string;
+  as_of?: string;
+  replay_of?: string;
+}): Promise<RunJob> {
+  return request("/workflow/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function resumeWorkflowRun(runId: string): Promise<RunJob> {
+  return request(`/workflow/runs/${runId}/resume`, { method: "POST" });
+}
+
+export function cancelWorkflowRun(runId: string): Promise<{ run_id: string; cancelling: boolean }> {
+  return request(`/workflow/runs/${runId}/cancel`, { method: "POST" });
+}
+
+export function fetchWorkflowRuns(
+  options: { ticker?: string; limit?: number } = {},
+): Promise<{ results: WorkflowRun[]; stages: { key: string; label: string }[] }> {
+  return request(`/workflow/runs${query({ ...options })}`);
+}
+
+export function fetchWorkflowRun(runId: string): Promise<{ run: WorkflowRun; report: WorkflowReport | null }> {
+  return request(`/workflow/runs/${runId}`);
 }

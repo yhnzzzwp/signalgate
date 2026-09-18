@@ -102,8 +102,14 @@ class SectorsClient:
         offset: int = 0,
         start: str | None = None,
         end: str | None = None,
+        symbols: str | None = None,
     ) -> dict[str, Any]:
-        return self.get("news", keyword=keyword, limit=limit, offset=offset, start=start, end=end)
+        """Artikel berita; `symbols` menyaring per emiten. 1 kredit per request, limit maksimum 30."""
+        return self.get("news", keyword=keyword, limit=limit, offset=offset, start=start, end=end, symbols=symbols)
+
+    def corporate_actions(self, ticker: str) -> dict[str, Any]:
+        """Split, rights issue, bonus, waran, dividen, RUPS untuk satu emiten. 1 kredit."""
+        return self.get(f"company/corporate-actions/{ticker}")
 
 
 if __name__ == "__main__":

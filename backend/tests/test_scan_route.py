@@ -1,13 +1,19 @@
 """/scan/run is the path that stays alive in savings mode, so its guarantees need locking down."""
+import json
+import shutil
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from app.api.routes import EVENT_PAGE_LIMIT
 from app.pipeline.schema import ActionBucket, CandidateEvent, Verdict, VerdictLabel
+from app.pipeline.stream import run_events
 from app.research.models import ResearchOutcome
+from app.scan import write_json
 
 
 def event(ticker="MGLV"):
@@ -60,7 +66,7 @@ class ScanRouteTests(unittest.TestCase):
              patch.object(self.main.Scanner, "discover", return_value=discovered or report()), \
              patch.object(self.main, "research_queue_items", side_effect=fake_queue), \
              patch.object(self.main, "mark_published",
-                          side_effect=lambda _dir, item_id: self.published.append(item_id)):
+                          side_effect=lambda _dir, item_id, _case_id: self.published.append(item_id)):
             response = self.client.post("/scan/run", **kwargs)
             if response.status_code != 202:
                 return response, None
@@ -179,6 +185,42 @@ class ScanRouteTests(unittest.TestCase):
         self.run_scan([(event("AAA1"), outcome(), {"id": "qA1"}), (event("AAA2"), outcome(), {"id": "qA2"})])
         self.assertEqual(self.client.get("/events?ticker=AAA1").json()["total"], 1)
         self.assertEqual(self.client.get("/events?ticker=AAA2").json()["total"], 1)
+
+    def test_a_real_queue_run_announces_each_case_before_the_model_reads_it(self):
+        """QA 17/09 P2: satu kandidat dulu tampil 'kasus 1 dari 3', dan nomornya terbit setelah model selesai.
+
+        Tidak memalsukan research_queue_items: celahnya justru ada di sambungan rute -> generator -> engine.
+        """
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        write_json(root / "queue" / "r1.json", {"id": "r1", "event": event("ONLY").model_dump(mode="json"),
+                                                "pdf_urls": [], "status": "needs_document"})
+
+        class Engine:
+            settings = None
+
+            def research(self_inner, candidate, *_args, **_kwargs):
+                run_events.publish("model", candidate.ticker, {"phase": "start", "role": "analyst"})
+                run_events.publish("model", candidate.ticker, {"phase": "end", "role": "analyst"})
+                return outcome()
+
+            def close(self_inner):
+                pass
+
+        settings = self.main.settings.model_copy(update={"scan_directory": root, "research_cases_dir": root / "cases"})
+        with patch.object(self.main, "settings", settings), patch.object(self.main, "DocumentSource"), \
+             patch.object(self.main.Scanner, "discover", return_value=report(candidates=0)), \
+             patch("app.scan.build_provider", return_value=Engine()), run_events.subscribe() as channel:
+            job = self.wait(self.client.post("/scan/run?limit=3").json()["id"])
+            received = []
+            while not channel.empty():
+                received.append(channel.get_nowait())
+        self.assertEqual(job["status"], "completed")
+        order = [(p["stage"], p["detail"].get("phase"), p["detail"].get("total"))
+                 for p in received if p["stage"] in ("case", "model")]
+        self.assertEqual(order, [("case", "start", 1), ("model", "start", None), ("model", "end", None),
+                                 ("case", "end", 1)])
+        self.assertEqual(json.loads((root / "queue" / "r1.json").read_text())["published_case_id"], "MGLV-test")
 
     def test_limit_is_bounded(self):
         for limit in (0, 21):

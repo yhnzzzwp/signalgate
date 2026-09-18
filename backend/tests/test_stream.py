@@ -255,3 +255,70 @@ class AuditPublishesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReplayTests(unittest.TestCase):
+    """QA 2026-09-17 P2: refresh di tengah run dulu menampilkan 'Menyiapkan run…' dan timeline kosong."""
+
+    def drain(self, channel):
+        received = []
+        while not channel.empty():
+            received.append(channel.get_nowait())
+        return received
+
+    def test_a_late_subscriber_receives_the_active_runs_history_first(self):
+        stream = RunEventStream()
+        stream.set_run("run-a")
+        stream.publish("case", "TEST", {"phase": "start", "index": 1, "total": 2})
+        stream.publish("model", "TEST", {"phase": "start", "role": "analyst"})
+        with stream.subscribe() as channel:
+            stream.publish("model", "TEST", {"phase": "end", "role": "analyst"})
+            received = self.drain(channel)
+        self.assertEqual([(p["stage"], p["detail"]["phase"]) for p in received],
+                         [("case", "start"), ("model", "start"), ("model", "end")])
+        self.assertEqual([p["seq"] for p in received], sorted(p["seq"] for p in received))
+
+    def test_a_reconnect_only_receives_what_it_missed(self):
+        stream = RunEventStream()
+        stream.set_run("run-a")
+        stream.publish("case", "TEST", {"phase": "start"})
+        seen = stream._history[-1]["seq"]
+        stream.publish("model", "TEST", {"phase": "start"})
+        with stream.subscribe(after=seen) as channel:
+            received = self.drain(channel)
+        self.assertEqual([p["stage"] for p in received], ["model"])
+
+    def test_an_id_from_a_previous_backend_process_replays_everything(self):
+        stream = RunEventStream()
+        stream.set_run("run-a")
+        stream.publish("case", "TEST", {"phase": "start"})
+        with stream.subscribe(after=9999) as channel:
+            self.assertEqual(len(self.drain(channel)), 1)
+
+    def test_a_new_run_does_not_replay_the_previous_one(self):
+        stream = RunEventStream()
+        stream.set_run("run-a")
+        stream.publish("case", "OLD", {"phase": "start"})
+        stream.set_run(None)
+        with stream.subscribe() as channel:
+            self.assertEqual(self.drain(channel), [], "tanpa run aktif tidak ada yang diputar ulang")
+        stream.set_run("run-b")
+        stream.publish("case", "NEW", {"phase": "start"})
+        with stream.subscribe() as channel:
+            self.assertEqual([p["ticker"] for p in self.drain(channel)], ["NEW"])
+
+    def test_replay_never_blocks_on_a_small_queue(self):
+        stream = RunEventStream()
+        stream.set_run("run-a")
+        for index in range(10):
+            stream.publish("model", f"T{index}")
+        with patch.object(stream_module, "QUEUE_LIMIT", 3), stream.subscribe() as channel:
+            self.assertEqual(len(self.drain(channel)), 3)
+
+    def test_stage_messages_carry_an_sse_id_so_the_browser_can_resume(self):
+        stream = RunEventStream()
+        stream.set_run("run-a")
+        stream.publish("scan", "*", {"candidates": 2})
+        messages = asyncio.run(take(event_source(stream), 2))
+        self.assertTrue(messages[1].startswith("id: 1\n"))
+        self.assertEqual(parse(messages[1])[1]["stage"], "scan")

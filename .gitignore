@@ -18,4 +18,5 @@ scripts/*
 !scripts/setup.cmd
 cases/
 data/library/
+data/workflow/
 data/scans/

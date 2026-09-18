@@ -29,7 +29,14 @@ function summarise(entry: AuditLogEntry): string {
   }
 }
 
-export function AuditTrail({ entries }: { entries: AuditLogEntry[] }) {
+interface AuditTrailProps {
+  entries: AuditLogEntry[];
+  total: number;
+  hasMore: boolean;
+  onLoadMore: () => void;
+}
+
+export function AuditTrail({ entries, total, hasMore, onLoadMore }: AuditTrailProps) {
   return (
     <div className="audit-trail">
       <h2 className="audit-trail__title">Jejak Audit</h2>
@@ -42,9 +49,16 @@ export function AuditTrail({ entries }: { entries: AuditLogEntry[] }) {
           <li key={entry.id} className="audit-trail__item">
             <div className="audit-trail__row">
               <time className="audit-trail__time" dateTime={entry.created_at}>
+                {/* Intl menolak timeZoneName bila digabung dateStyle/timeStyle, jadi komponennya disebut satu-satu. */}
                 {new Date(entry.created_at).toLocaleString("id-ID", {
-                  dateStyle: "short",
-                  timeStyle: "medium",
+                  day: "2-digit",
+                  month: "2-digit",
+                  year: "2-digit",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                  hour12: false,
+                  timeZoneName: "short",
                 })}
               </time>
               <span className={`audit-trail__stage audit-trail__stage--${entry.stage}`}>
@@ -60,6 +74,18 @@ export function AuditTrail({ entries }: { entries: AuditLogEntry[] }) {
           </li>
         ))}
       </ul>
+      {entries.length > 0 && (
+        <footer className="dashboard__paging">
+          <span>
+            Menampilkan {entries.length} dari {total} entri, terbaru lebih dulu
+          </span>
+          {hasMore && (
+            <button className="dashboard__filter" onClick={onLoadMore}>
+              Muat jejak lebih lama
+            </button>
+          )}
+        </footer>
+      )}
     </div>
   );
 }

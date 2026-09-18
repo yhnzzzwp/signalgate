@@ -228,6 +228,45 @@ Pola "LLM terbatas, Python yang memutuskan" dipilih setelah membaca kode tiga pe
 Trading Agents Hackathon (konsep saja, tanpa kode yang diambil): VegaGuard memakai LLM hanya untuk
 menjelaskan fakta yang sudah divalidasi, TradePilot memberi Python hak veto atas keputusan LLM.
 
+## Laporan empat panel (graph LangGraph)
+
+`backend/app/workflow/` menjalankan laporan emiten dengan empat dimensi wajib. Graph yang menegakkan
+urutan, dependensi, batas perbaikan, timeout, dan pembatalan; model hanya mengisi bagian bahasa.
+
+```
+plan → snapshot → calculate → research → news → validate → review ─┬→ repair → validate → review → synthesis
+                                                                    └→ synthesis → report → publish
+```
+
+| Node | Pelaksana | Keluaran |
+|---|---|---|
+| `plan` | kode | empat dimensi wajib, versi schema/prompt/perhitungan, model yang dipakai |
+| `snapshot` | kode | respons mentah Sectors + hash, waktu ambil, ketersediaan, status, kredit |
+| `calculate` | kode | metrik fundamental/valuation/technical/news beserta formula dan periode |
+| `research` | analis (Qwen) | tafsiran fundamental dan valuasi, satu panggilan dua panel |
+| `news` | analis (Qwen) | peristiwa berkutipan dengan atribusi dokumen/pernyataan/analis |
+| `validate` | kode | pemeriksaan referensi, identitas, waktu, kutipan, angka, bahasa transaksi |
+| `review` | pembanding (model lain) | pembacaan independen lebih dulu, lalu putusan per klaim |
+| `repair` | analis | satu putaran, hanya klaim bermasalah beserta alasan gagalnya |
+| `synthesis` | analis | ringkasan hanya dari klaim terverifikasi; angka baru ditolak |
+| `report`/`publish` | kode | status panel, gerbang bahasa, simpan dengan kunci `(run_id, report_version)` |
+
+Yang menentukan status adalah kode, bukan kesepakatan model. Pemeriksaan mekanis tidak bisa dianulir:
+klaim dengan angka di luar metriknya, kutipan yang tidak ada di sumber, atau sumber yang terbit setelah
+tanggal acuan tetap `unsupported` sekalipun pembanding setuju. Kalau model mati, angka tetap terbit dan
+panelnya berstatus `needs_review` dengan alasan eksplisit, bukan diisi tafsiran karangan.
+
+Biaya satu run kira-kira 13 kredit Sectors. Mode `replay` memakai snapshot run lain tanpa kredit sama
+sekali dan mempertahankan tanggal pengambilan aslinya. Checkpoint LangGraph disimpan di
+`data/workflow/checkpoints.sqlite`, sedangkan publikasi memakai kunci idempotensi sehingga gagal
+publish yang di-resume tidak menggandakan laporan.
+
+Batas yang melekat pada sumbernya, dan ditampilkan di laporan: harga harian Sectors tidak disesuaikan
+untuk aksi korporasi (indikator dipotong di sekitar split/rights issue dan lompatan harga ekstrem),
+endpoint harga memangkas rentang >90 hari tanpa error (karena itu diambil bertahap), laporan kuartalan
+tidak menyertakan tanggal publikasi (tanggal acuan historis memakai batas lapor konservatif 60/90 hari),
+dan company report hanya mewakili keadaan terkini sehingga tidak dipakai untuk tanggal acuan historis.
+
 ## Keterbatasan yang diketahui
 
 - Uji lokal menemukan salah kategori pada kedua model. Belum ada perbandingan terkontrol dengan
@@ -235,11 +274,16 @@ menjelaskan fakta yang sudah divalidasi, TradePilot memberi Python hak veto atas
 - Satu artikel sering tidak memuat konteks penuh (misalnya pergantian bisnis MGLV ada di data industri
   Sectors dan pengumuman divestasi, bukan di berita rights issue-nya).
 - Bobot skor belum dikalibrasi terhadap data historis.
-- Asosiasi lampiran IDX bersandar pada tanggal di nama berkas; pengumuman tanpa tanggal yang bisa
-  diturunkan tidak digabungkan dan diserahkan ke pemeriksaan manusia.
+- Asosiasi lampiran IDX bersandar pada dua hal: tanggal di nama berkas harus dalam 14 hari dari
+  tanggal terbit artikel (dibaca dari metadata HTML, `span.time-posted`, atau URL), dan beberapa
+  pengumuman hanya digabung bila semuanya bernomor sama. Yang tidak terbukti tidak dipasang; alasannya
+  (`document_review`) ikut ke hasil riset sehingga kartu tetap `needs_review`. Situs yang tidak menulis
+  tanggal terbit di salah satu tempat itu selalu berakhir di pemeriksaan manusia.
 - `/pipeline/run` dan `/scan/run` berjalan di latar dan langsung mengembalikan `run_id`; status
-  dibaca ulang lewat `/runs/active` atau `/runs/{id}`, jadi refresh halaman tidak menghilangkan
-  progres. Satu run pada satu waktu, dijaga `run_lock`; job yang tertinggal saat backend mati
+  dibaca ulang lewat `/runs/active` atau `/runs/{id}`. Event SSE bernomor dan riwayat run aktif
+  diputar ulang untuk koneksi baru, jadi refresh halaman memulihkan timeline dan hitungan kasus.
+- Pipeline Sectors memberi kartu kunci `sectors:{ticker}:{source_url}` dan melewati berita yang sudah
+  berputusan sebelum snapshot diambil, jadi run ulang tidak memakai kredit untuk berita yang sama. Satu run pada satu waktu, dijaga `run_lock`; job yang tertinggal saat backend mati
   ditutup otomatis saat start berikutnya.
 - Capture/replay lokal sudah ada di `app.evaluate`; paket demo yang siap dibagikan ke juri belum dibuat.
 

@@ -33,6 +33,7 @@ export interface EvidenceSource {
   url: string;
   title: string;
   retrieved_at: string;
+  page_number?: number | null;
 }
 
 export interface ScreenedEventDetail {
@@ -100,6 +101,9 @@ export interface ScanRunResult {
   ambiguous_documents: number;
   without_document: number;
   pending: number;
+  retry_waiting?: number;
+  retry_exhausted?: number;
+  next_retry_at?: string | null;
   processed: number;
   provider: string | null;
   articles_checked: number;
@@ -110,18 +114,135 @@ export interface ScanRunResult {
 
 export interface PipelineRunResult {
   screened_count: number;
+  already_processed?: number;
   provider: string;
+}
+
+export type PanelStatus = "completed" | "insufficient_data" | "needs_review" | "failed";
+export type ValidationStatus = "pending" | "supported" | "unsupported" | "contradicted";
+
+export interface WorkflowMetric {
+  metric_id: string;
+  domain: string;
+  name: string;
+  value: number | null;
+  unit: string;
+  formula: string;
+  period: string;
+  source_ids: string[];
+  input_metric_ids: string[];
+  price_basis: string | null;
+  status: "ok" | "insufficient_data" | "not_meaningful";
+  note: string | null;
+}
+
+export interface WorkflowClaim {
+  claim_id: string;
+  domain: string;
+  kind: "observation" | "calculation" | "interpretation";
+  statement: string;
+  attribution: string;
+  metric_ids: string[];
+  source_ids: string[];
+  quote: string | null;
+  period: string | null;
+  limitations: string[];
+  validation_status: ValidationStatus;
+  validation_notes: string[];
+  version: number;
+  author: string;
+}
+
+export interface WorkflowPanel {
+  domain: string;
+  status: PanelStatus;
+  headline: string;
+  metrics: string[];
+  claims: WorkflowClaim[];
+  missing_data: string[];
+  limitations: string[];
+  conflicts: string[];
+  model_gap?: string | null;
+}
+
+export interface WorkflowSource {
+  source_id: string;
+  kind: string;
+  endpoint: string;
+  status: string;
+  fetched_at: string;
+  available_at: string | null;
+  period: string | null;
+  sha256: string | null;
+  credits: number | null;
+  mode: string;
+  error: string | null;
+}
+
+export interface WorkflowReport {
+  run_id: string;
+  ticker: string;
+  as_of: string;
+  horizon: string;
+  status: string;
+  report_version: number;
+  generated_at: string;
+  data_mode: string;
+  mode: string;
+  plan: Record<string, unknown> & { analyst_model?: string | null; reviewer_model?: string | null };
+  panels: Record<string, WorkflowPanel>;
+  metrics: Record<string, WorkflowMetric>;
+  sources: WorkflowSource[];
+  synthesis: {
+    author: string;
+    sections: { text: string; claim_ids: string[]; author?: string }[];
+    dropped: { text: string; issues: string[] }[];
+    error: string | null;
+  };
+  validation: { unresolved_claim_ids: string[]; repair_count: number; reviewer_problems?: string[] };
+  gate: { status: string; rejected_terms: string[] };
+  credits_used: number;
+  model_runs: { role: string; model: string; seconds: number; ok: boolean; error?: string | null }[];
+  disclaimer: string;
+}
+
+export interface WorkflowRun {
+  run_id: string;
+  ticker: string;
+  horizon: string;
+  as_of: string;
+  data_mode: string;
+  status: string;
+  job_id: string | null;
+  replay_of: string | null;
+  error: string | null;
+  report_version: number | null;
+  created_at: string | null;
+}
+
+export interface WorkflowRunResult {
+  run_id: string;
+  status: string;
+  ticker: string;
+  as_of: string;
+  data_mode: string;
+  report_version: number | null;
+  credits_used: number;
+  panels: Record<string, PanelStatus>;
+  unresolved_claims: number;
+  model_runs: number;
 }
 
 export type RunStatus = "running" | "completed" | "failed";
 
 export interface RunJob {
   id: string;
-  kind: "scan" | "pipeline";
+  kind: "scan" | "pipeline" | "workflow";
+  run_id?: string;
   status: RunStatus;
   started_at: string;
   finished_at: string | null;
-  result: (ScanRunResult & Partial<PipelineRunResult>) | null;
+  result: (ScanRunResult & Partial<PipelineRunResult> & Partial<WorkflowRunResult>) | null;
   error: string | null;
 }
 

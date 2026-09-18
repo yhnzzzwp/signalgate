@@ -18,6 +18,18 @@ type LabelFilter = VerdictLabel | "all";
 type LoadState = "loading" | "ready" | "error";
 
 const PAGE_SIZE = 24;
+const AUDIT_PAGE_SIZE = 50;
+const ACTIVE_RUN_RETRY_MS = 5000;
+
+/** Baris baru bisa masuk di atas selama pengguna membuka halaman berikutnya; yang sudah tampil dilewati. */
+function appendUnique<T extends { id: number }>(previous: T[], next: T[]): T[] {
+  const seen = new Set(previous.map((item) => item.id));
+  return [...previous, ...next.filter((item) => !seen.has(item.id))];
+}
+
+function clockText(iso: string): string {
+  return new Date(iso).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
 const LABELS: LabelFilter[] = ["all", "structural_red_flag", "growth_catalyst", "inconclusive"];
 
 /**
@@ -46,6 +58,13 @@ function describeScan(result: ScanRunResult): string {
     parts.push(`${result.ambiguous_documents} kandidat punya lampiran ambigu dan menunggu pemeriksaan.`);
   }
   if (result.pending > 0) parts.push(`${result.pending} masih mengantre.`);
+  if (result.retry_waiting) {
+    const when = result.next_retry_at ? ` paling cepat pukul ${clockText(result.next_retry_at)}` : "";
+    parts.push(`${result.retry_waiting} kandidat gagal menunggu jadwal coba ulang${when}.`);
+  }
+  if (result.retry_exhausted) {
+    parts.push(`${result.retry_exhausted} kandidat berhenti dicoba setelah beberapa kali gagal.`);
+  }
   // Cakupan parsial tetap dilaporkan walau ada hasil.
   if (result.failed_sources?.length) {
     parts.push(`Sumber gagal diambil: ${result.failed_sources.map((item) => item.url).join(", ")}.`);
@@ -58,7 +77,9 @@ function describeRun(job: RunJob): string {
   if (job.status === "failed") return job.error ?? "Run gagal tanpa keterangan.";
   if (!job.result) return "Run selesai.";
   if (job.kind === "scan") return describeScan(job.result as ScanRunResult);
-  return `${job.result.screened_count ?? 0} kasus diriset lewat Sectors.`;
+  const researched = `${job.result.screened_count ?? 0} kasus diriset lewat Sectors.`;
+  const skipped = job.result.already_processed ?? 0;
+  return skipped > 0 ? `${researched} ${skipped} berita sudah pernah diputus dan dilewati tanpa memakai kredit.` : researched;
 }
 
 /**
@@ -81,6 +102,8 @@ export function Dashboard() {
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
   const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditHasMore, setAuditHasMore] = useState(false);
   const [filter, setFilter] = useState<LabelFilter>("all");
   const [showAudit, setShowAudit] = useState(false);
   const [state, setState] = useState<LoadState>("loading");
@@ -94,14 +117,19 @@ export function Dashboard() {
     try {
       const [page, audit] = await Promise.all([
         fetchEvents({ limit: PAGE_SIZE, offset: nextOffset, label: label === "all" ? undefined : label }),
-        fetchAuditLog({ limit: 60 }),
+        // Jejak audit punya halamannya sendiri; memuat kartu lebih lama tidak boleh mengulang audit.
+        nextOffset === 0 ? fetchAuditLog({ limit: AUDIT_PAGE_SIZE }) : Promise.resolve(null),
       ]);
-      setEvents((previous) => (nextOffset === 0 ? page.results : [...previous, ...page.results]));
+      setEvents((previous) => (nextOffset === 0 ? page.results : appendUnique(previous, page.results)));
       setCounts(page.counts);
       setTotal(page.total);
       setHasMore(page.has_more);
       setOffset(nextOffset);
-      setAuditEntries(audit.results);
+      if (audit) {
+        setAuditEntries(audit.results);
+        setAuditTotal(audit.total);
+        setAuditHasMore(audit.has_more);
+      }
       setError(null);
       setState("ready");
     } catch (err) {
@@ -115,15 +143,23 @@ export function Dashboard() {
   }, [filter, loadData]);
 
   // Sambung kembali ke run yang masih berjalan: refresh halaman tidak boleh menghilangkan progres.
+  // Backend yang belum siap saat halaman dibuka dicoba lagi, bukan dianggap "tidak ada run".
   useEffect(() => {
     let cancelled = false;
-    fetchActiveRun()
-      .then((active) => {
-        if (!cancelled && active) setJob(active);
-      })
-      .catch(() => undefined);
+    let timer: number | undefined;
+    const attempt = () => {
+      fetchActiveRun()
+        .then((active) => {
+          if (!cancelled && active) setJob(active);
+        })
+        .catch(() => {
+          if (!cancelled) timer = window.setTimeout(attempt, ACTIVE_RUN_RETRY_MS);
+        });
+    };
+    attempt();
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, []);
 
@@ -151,7 +187,29 @@ export function Dashboard() {
     try {
       setJob(kind === "scan" ? await triggerScanRun() : await triggerPipelineRun());
     } catch (err) {
+      // 409 berarti ada run lain; koneksi putus bisa berarti run INI sudah dibuat. Keduanya diikuti,
+      // bukan dijawab dengan pesan yang membuat tombol tampak bisa ditekan lagi.
+      const conflict = err instanceof ApiError && err.status === 409;
+      if (conflict || !(err instanceof ApiError)) {
+        const active = await fetchActiveRun().catch(() => null);
+        if (active) {
+          setJob(active);
+          if (conflict) setNotice("Run lain sedang berjalan; progresnya ditampilkan di bawah.");
+          return;
+        }
+      }
       setError(await describeFailure(err, () => loadData(0, filter)));
+    }
+  }
+
+  async function loadMoreAudit() {
+    try {
+      const page = await fetchAuditLog({ limit: AUDIT_PAGE_SIZE, offset: auditEntries.length });
+      setAuditEntries((previous) => appendUnique(previous, page.results));
+      setAuditTotal(page.total);
+      setAuditHasMore(page.has_more);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Jejak audit lama gagal dimuat.");
     }
   }
 
@@ -165,7 +223,7 @@ export function Dashboard() {
           : "Belum ada event — jalankan “Scan Scrapling” untuk memulai tanpa memakai kredit API.";
 
   return (
-    <main className="dashboard">
+    <div className="dashboard__page">
       <header className="dashboard__header">
         <div>
           <h1>SignalGate</h1>
@@ -222,7 +280,12 @@ export function Dashboard() {
       </div>
 
       {showAudit ? (
-        <AuditTrail entries={auditEntries} />
+        <AuditTrail
+          entries={auditEntries}
+          total={auditTotal}
+          hasMore={auditHasMore}
+          onLoadMore={() => void loadMoreAudit()}
+        />
       ) : (
         <>
           <div className="dashboard__grid">
@@ -246,6 +309,6 @@ export function Dashboard() {
           )}
         </>
       )}
-    </main>
+    </div>
   );
 }

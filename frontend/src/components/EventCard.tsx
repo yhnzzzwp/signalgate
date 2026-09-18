@@ -2,22 +2,60 @@ import { BUCKET_TEXT, FACT_TOPIC_TEXT, RESEARCH_STATUS_TEXT, VALIDATOR_STATUS_TE
 import type { EvidenceSource, ResearchFact, ScreenedEventSummary } from "../types";
 import { VerdictBadge } from "./VerdictBadge";
 
-/** Bukti dikelompokkan per dokumen; satu PDF panjang tidak perlu satu baris untuk tiap halaman. */
-function groupSources(sources: EvidenceSource[]) {
-  const groups = new Map<string, { title: string; url: string; kind: string; pages: number }>();
+const isWebUrl = (url: string) => /^https?:\/\//.test(url);
+
+/** Tautan yang membuka dokumen tepat di halaman kutipan, bila halamannya diketahui. */
+function evidenceHref(source: EvidenceSource): string | undefined {
+  if (!isWebUrl(source.url)) return undefined;
+  const base = source.url.split("#")[0];
+  return source.page_number ? `${base}#page=${source.page_number}` : source.url;
+}
+
+function evidenceLabel(source: EvidenceSource): string {
+  return source.page_number ? `${source.id} · hal. ${source.page_number}` : source.id;
+}
+
+interface SourceGroup {
+  title: string;
+  url: string;
+  kind: string;
+  pages: EvidenceSource[];
+}
+
+/**
+ * Bukti dikelompokkan per dokumen, tetapi setiap halaman tetap bisa dibuka: kutipan `[E007]` harus
+ * bisa ditemukan di daftar ini. `kind=input` adalah kandidat yang belum diverifikasi, bukan bukti:
+ * verifikasi fakta di backend tidak pernah menerimanya, dan tautannya sudah ada di "Sumber kandidat".
+ */
+function groupSources(sources: EvidenceSource[]): SourceGroup[] {
+  const groups = new Map<string, SourceGroup>();
   for (const source of sources) {
-    // `kind=input` adalah kandidat yang belum diverifikasi, bukan bukti pendukung: verifikasi fakta
-    // di backend tidak pernah menerimanya. Ditampilkan terpisah agar tidak terbaca sebagai sumber.
-    if (!/^https?:\/\//.test(source.url)) continue;
+    if (source.kind === "input" || !isWebUrl(source.url)) continue;
     const key = source.url.split("#")[0];
     const existing = groups.get(key);
-    if (existing) existing.pages += 1;
-    else groups.set(key, { title: source.title || key, url: key, kind: source.kind, pages: 1 });
+    if (existing) existing.pages.push(source);
+    else groups.set(key, { title: source.title || key, url: key, kind: source.kind, pages: [source] });
   }
   return [...groups.values()];
 }
 
-function FactRow({ fact }: { fact: ResearchFact }) {
+function EvidenceLink({ id, source }: { id: string; source?: EvidenceSource }) {
+  const href = source ? evidenceHref(source) : undefined;
+  if (!source || !href) return <span className="event-card__evidence-id">[{id}]</span>;
+  return (
+    <a
+      className="event-card__evidence-id event-card__evidence-link"
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      title={source.title}
+    >
+      [{evidenceLabel(source)}]
+    </a>
+  );
+}
+
+function FactRow({ fact, source }: { fact: ResearchFact; source?: EvidenceSource }) {
   const status = fact.validator_status ?? "unknown";
   return (
     <li className={`event-card__fact event-card__fact--${status}`}>
@@ -29,7 +67,7 @@ function FactRow({ fact }: { fact: ResearchFact }) {
       {fact.claim && <p className="event-card__fact-claim">{fact.claim}</p>}
       {fact.quote && (
         <blockquote className="event-card__quote">
-          “{fact.quote}” <span className="event-card__evidence-id">[{fact.evidence_id}]</span>
+          “{fact.quote}” <EvidenceLink id={fact.evidence_id} source={source} />
         </blockquote>
       )}
     </li>
@@ -42,7 +80,10 @@ export function EventCard({ event }: { event: ScreenedEventSummary }) {
   const research = detail.research;
   const facts = research?.facts ?? [];
   const issues = research?.issues ?? [];
-  const sources = groupSources(research?.evidence ?? []);
+  const evidence = research?.evidence ?? [];
+  const evidenceById = new Map(evidence.map((source) => [source.id, source]));
+  const sources = groupSources(evidence);
+  const cited = new Set(facts.map((fact) => fact.evidence_id));
 
   return (
     <article className={`event-card ${needsReview ? "event-card--needs-review" : ""}`}>
@@ -100,7 +141,11 @@ export function EventCard({ event }: { event: ScreenedEventSummary }) {
           <summary>Fakta dan kutipannya ({facts.length})</summary>
           <ul className="event-card__facts">
             {facts.map((fact) => (
-              <FactRow key={`${fact.id}-${fact.topic}-${fact.value}`} fact={fact} />
+              <FactRow
+                key={`${fact.id}-${fact.topic}-${fact.value}`}
+                fact={fact}
+                source={evidenceById.get(fact.evidence_id)}
+              />
             ))}
           </ul>
         </details>
@@ -121,8 +166,21 @@ export function EventCard({ event }: { event: ScreenedEventSummary }) {
                     {source.title}
                   </a>
                   <span className="event-card__source-meta">
-                    {source.kind === "pdf" ? "PDF" : "halaman web"}
-                    {source.pages > 1 && ` · ${source.pages} halaman`}
+                    {source.kind === "pdf" ? `PDF · ${source.pages.length} halaman dibaca` : "halaman web"}
+                    {source.pages.some((page) => cited.has(page.id)) && " · dikutip:"}
+                  </span>
+                  <span className="event-card__source-pages">
+                    {source.pages.filter((page) => cited.has(page.id)).map((page) => (
+                      <a
+                        key={page.id}
+                        className="event-card__evidence-id event-card__evidence-link"
+                        href={evidenceHref(page)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {evidenceLabel(page)}
+                      </a>
+                    ))}
                   </span>
                 </li>
               ))}

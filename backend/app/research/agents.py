@@ -3,6 +3,8 @@ from __future__ import annotations
 import httpx
 from pydantic import BaseModel
 
+# Ruang keluaran default. Graph laporan memakai nilai lebih kecil lewat `num_predict` supaya konteks
+# kecil tetap menyisakan ruang input; mengubah Modelfile saja tidak mengalahkan parameter request ini.
 OUTPUT_TOKEN_BUDGET = 2048
 CHARS_PER_TOKEN = 3
 
@@ -36,10 +38,12 @@ class OllamaAgent:
         think: bool | None = None,
         client: httpx.Client | None = None,
         keep_alive: str | int = "5m",
+        num_predict: int = OUTPUT_TOKEN_BUDGET,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.num_ctx = num_ctx
+        self.num_predict = num_predict
         self.think = think
         self.digest = "unknown"
         self.keep_alive = keep_alive
@@ -51,7 +55,7 @@ class OllamaAgent:
 
     @property
     def max_prompt_chars(self) -> int:
-        return (self.num_ctx - OUTPUT_TOKEN_BUDGET) * CHARS_PER_TOKEN
+        return (self.num_ctx - self.num_predict) * CHARS_PER_TOKEN
 
     def check_ready(self) -> None:
         try:
@@ -88,7 +92,7 @@ class OllamaAgent:
             "stream": False,
             "keep_alive": self.keep_alive,
             "format": inline_schema(schema.model_json_schema()),
-            "options": {"temperature": 0, "num_ctx": self.num_ctx, "num_predict": OUTPUT_TOKEN_BUDGET},
+            "options": {"temperature": 0, "num_ctx": self.num_ctx, "num_predict": self.num_predict},
             "messages": [{"role": "user", "content": prompt}],
         }
         if self.think is not None:

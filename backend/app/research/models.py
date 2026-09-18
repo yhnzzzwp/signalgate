@@ -79,6 +79,11 @@ class Evidence(StrictModel):
     document_sha256: str | None = None
 
 
+# Status yang merupakan putusan, bukan kegagalan lingkungan. Kandidat berstatus ini tidak diriset
+# ulang; `needs_review` terhitung putusan karena justru hasil paling umum.
+SETTLED_RESEARCH_STATUSES = frozenset({"completed", "needs_review"})
+
+
 class ResearchOutcome(BaseModel):
     verdict: Verdict
     status: str

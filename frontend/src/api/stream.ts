@@ -7,6 +7,8 @@ export interface StageEvent {
   detail: Record<string, unknown>;
   /** Identitas run penerbit, agar sisa event run sebelumnya tidak terbaca sebagai progres. */
   run_id: string | null;
+  /** Nomor urut dari backend; riwayat yang diputar ulang saat menyambung tidak boleh tercatat dua kali. */
+  seq?: number;
   created_at: string;
 }
 
@@ -14,7 +16,8 @@ export interface StageEvent {
  * Tahap pipeline langsung dari backend lewat SSE.
  *
  * Dipasang hanya selama run berjalan. Komponen pemakainya diberi `key` per run, jadi state-nya
- * mulai bersih tanpa perlu dikosongkan dari dalam effect.
+ * mulai bersih tanpa perlu dikosongkan dari dalam effect. Backend memutar ulang riwayat run aktif
+ * untuk koneksi baru, jadi refresh halaman memulihkan timeline dan hitungan kasus.
  */
 export function useRunStream(active: boolean) {
   const [events, setEvents] = useState<StageEvent[]>([]);
@@ -23,11 +26,17 @@ export function useRunStream(active: boolean) {
   useEffect(() => {
     if (!active) return;
     const source = new EventSource(`${BASE_URL}/run/stream`);
+    let lastSeq = 0;
 
     const onReady = () => setConnected(true);
     const onStage = (message: Event) => {
       try {
-        setEvents((previous) => [...previous, JSON.parse((message as MessageEvent).data) as StageEvent]);
+        const event = JSON.parse((message as MessageEvent).data) as StageEvent;
+        if (typeof event.seq === "number") {
+          if (event.seq <= lastSeq) return;
+          lastSeq = event.seq;
+        }
+        setEvents((previous) => [...previous, event]);
       } catch {
         // Pesan rusak dilewati; satu baris hilang tidak sebanding dengan menjatuhkan tampilan.
       }

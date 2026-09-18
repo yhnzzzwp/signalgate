@@ -197,7 +197,9 @@ cp .env.example .env
 npm run dev
 ```
 
-Buka `http://localhost:5173`. Ada dua tombol:
+Buka `http://localhost:5173`. Ada dua tab: **Screening aksi korporasi** dan **Laporan emiten**.
+
+Tab screening punya dua tombol:
 
 | Tombol | Sumber kandidat | Kredit Sectors |
 |---|---|---|
@@ -211,8 +213,11 @@ tersimpan ke database, jadi dashboard dan audit trail terisi tanpa memakai kredi
 Kandidat tanpa lampiran PDF tetap diriset dari artikel sumbernya; PDF diwajibkan terbaca hanya bila
 memang ada. Kandidat yang sudah berputusan tidak diriset ulang, dan yang gagal karena sebab
 lingkungan dicoba lagi dengan jeda menaik — jadi kandidat baru selalu kebagian giliran. Lampiran
-hanya dipasangkan bila tanggal pengumumannya terbukti sama; kalau ambigu, kandidat ditandai
-`ambiguous_documents` untuk diperiksa manusia. Cakupannya selalu parsial — hanya sumber yang kamu
+IDX hanya dipasangkan ke artikel bila tanggal pengumumannya paling jauh 14 hari dari tanggal terbit
+artikel dan nomor pengumumannya menunjuk satu aksi. Lampiran di luar rentang itu ditolak dan dicatat.
+Kalau hubungannya tidak bisa dibuktikan (tanggal artikel tak terbaca, lampiran tanpa tanggal, atau
+nomor berbeda), kandidat ditandai `ambiguous_documents`, diriset dari artikelnya saja, dan kartunya
+tetap berstatus perlu pemeriksaan. Cakupannya selalu parsial — hanya sumber yang kamu
 daftarkan, bukan seluruh IDX.
 
 Uji pengembangan hanya dengan artikel Scrapling, tanpa memanggil Sectors API:
@@ -220,6 +225,39 @@ Uji pengembangan hanya dengan artikel Scrapling, tanpa memanggil Sectors API:
 ```bash
 cd backend && source .venv/bin/activate && python -m app.scrapling_check
 ```
+
+## Laporan emiten empat panel
+
+Tab **Laporan emiten** menjawab pertanyaan yang berbeda dari screening: bukan "apakah aksi korporasi
+ini red flag", melainkan "bagaimana keadaan emiten ini menurut data yang ada". Satu run menghasilkan
+empat panel wajib — **fundamental, valuation, technical, news** — dari satu snapshot Sectors yang sama.
+
+| Jalur | Cara memanggil | Kredit Sectors |
+|---|---|---|
+| Run baru | `POST /workflow/run` `{"ticker":"LPKR"}` | ~13 (4 seksi report + 5 kuartal + 2 jendela harga + aksi korporasi + berita) |
+| Putar ulang run lama | `POST /workflow/run` `{"replay_of":"<run_id>"}` | **0** |
+| Lanjutkan run gagal | `POST /workflow/runs/<run_id>/resume` | hanya sumber yang belum terambil |
+
+Pembagian kerjanya tegas: **Python menghitung, model menafsirkan, kode yang memutuskan status.**
+
+- Setiap angka lahir di `backend/app/workflow/calculations.py` beserta formula, periode, unit, dan ID
+  sumbernya. Model tidak pernah menghitung.
+- Setiap klaim model melewati pemeriksaan mekanis di `evidence.py`: referensi metrik/sumber harus ada,
+  ticker harus cocok, sumber tidak boleh terbit setelah tanggal acuan, kutipan harus ditemukan di
+  teks sumber, dan **setiap angka dalam kalimat harus sama dengan metrik yang dirujuk**. Klaim yang
+  gagal di sini tetap `unsupported` walau pembanding menyetujuinya.
+- Pembanding independen membaca bukti lebih dulu, baru menilai klaim analis. Ada satu putaran
+  perbaikan terarah; klaim yang tetap gagal tidak pernah masuk ringkasan.
+- Ringkasan lintas dimensi hanya memakai klaim terverifikasi. Bagian yang menyelipkan angka baru
+  dibuang, dan ringkasan jatuh kembali ke kalimat yang disusun kode.
+
+Keterbatasan yang ditampilkan apa adanya: harga harian Sectors belum disesuaikan untuk aksi korporasi,
+jadi indikator dipotong di sekitar split/rights issue; laporan kuartalan tidak punya tanggal publikasi,
+jadi tanggal acuan historis memakai batas lapor konservatif; dan company report adalah snapshot
+terkini sehingga tidak dipakai untuk tanggal acuan di masa lalu.
+
+Untuk demo tanpa kredit, jalankan satu run live lalu putar ulang `run_id`-nya: snapshot dipakai
+kembali apa adanya, dengan tanggal pengambilan aslinya tetap tercatat dan ditandai `replay` di UI.
 
 ## Test
 
@@ -236,6 +274,7 @@ cache, model mati), penyaringan kutipan dan nama pihak, aturan skor, klien Ollam
 ```
 backend/app/sectors/   klien Sectors API v2
 backend/app/pipeline/  sense, hypothesize, validate, gate, watch, audit, orchestrator
+backend/app/workflow/  graph laporan empat panel: snapshot, perhitungan, bukti, validasi, sintesis
 backend/app/research/  engine hybrid, klien Ollama, penyaringan fakta, skor, evidence store Scrapling
 backend/app/api/       endpoint FastAPI yang dikonsumsi dashboard
 backend/app/db/        model SQLAlchemy (audit trail)

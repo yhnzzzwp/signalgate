@@ -11,6 +11,7 @@ const STAGES: Record<RunJob["kind"], { key: string; label: string }[]> = {
   scan: [
     { key: "scan", label: "Memindai sumber publik" },
     { key: "model", label: "Model membaca bukti" },
+    { key: "validate", label: "Validasi silang" },
     { key: "gate", label: "Pemeriksaan kepatuhan" },
   ],
   pipeline: [
@@ -19,6 +20,31 @@ const STAGES: Record<RunJob["kind"], { key: string; label: string }[]> = {
     { key: "validate", label: "Validasi silang" },
     { key: "gate", label: "Pemeriksaan kepatuhan" },
   ],
+  // Jalur laporan empat panel: graph menerbitkan nama node-nya sendiri lewat `detail.node`.
+  workflow: [
+    { key: "snapshot", label: "Snapshot Sectors" },
+    { key: "calculate", label: "Menghitung metrik" },
+    { key: "research", label: "Analis fundamental & valuasi" },
+    { key: "news", label: "Analis berita" },
+    { key: "validate", label: "Pemeriksaan kode" },
+    { key: "review", label: "Pembanding independen" },
+    { key: "synthesis", label: "Menyusun laporan" },
+    { key: "publish", label: "Menyimpan laporan" },
+  ],
+};
+
+const WORKFLOW_LABELS: Record<string, string> = {
+  plan: "menyusun rencana",
+  snapshot: "mengambil snapshot Sectors",
+  calculate: "menghitung metrik",
+  research: "analis membaca fundamental dan valuasi",
+  news: "analis membaca berita",
+  validate: "pemeriksaan kode",
+  review: "pembanding independen membaca bukti",
+  repair: "perbaikan klaim terarah",
+  synthesis: "menyusun laporan",
+  report: "gerbang akhir",
+  publish: "menyimpan laporan",
 };
 
 const ROLE_TEXT: Record<string, string> = {
@@ -27,6 +53,16 @@ const ROLE_TEXT: Record<string, string> = {
   reviewer_2: "pembanding 2",
   reviewer_3: "pembanding 3",
 };
+
+/**
+ * Tahap tampilan sebuah event. Pembaca pembanding menerbitkan event `model` yang sama dengan analis,
+ * padahal yang sedang terjadi adalah validasi silang; tanpa pemetaan ini tahap itu tidak pernah aktif.
+ */
+function stageOf(event: StageEvent): string {
+  if (event.stage === "workflow") return String(event.detail?.node ?? "workflow");
+  if (event.stage === "model" && String(event.detail?.role ?? "").startsWith("reviewer")) return "validate";
+  return event.stage;
+}
 
 function elapsedText(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
@@ -43,6 +79,13 @@ function activeLine(events: StageEvent[]): string {
       const model = String(detail.model ?? "").replace(/^ollama:/, "");
       if (detail.phase === "start") return `${event.ticker}: ${role} (${model}) sedang membaca bukti…`;
       return `${event.ticker}: ${role} selesai dalam ${detail.seconds}s`;
+    }
+    if (event.stage === "workflow") {
+      const label = WORKFLOW_LABELS[String(detail.node)] ?? String(detail.node);
+      const repairs = detail.repair_count ? ` (perbaikan ke-${detail.repair_count})` : "";
+      return detail.phase === "start"
+        ? `${event.ticker}: ${label}${repairs}…`
+        : `${event.ticker}: ${label} selesai`;
     }
     if (event.stage === "case" && detail.phase === "start") {
       return `Menyiapkan ${event.ticker} (kasus ${detail.index} dari ${detail.total})…`;
@@ -62,6 +105,8 @@ function summarise(event: StageEvent): string {
       return detail.phase === "start"
         ? `${ROLE_TEXT[String(detail.role)] ?? detail.role} mulai membaca`
         : `${ROLE_TEXT[String(detail.role)] ?? detail.role} selesai · ${detail.seconds}s`;
+    case "workflow":
+      return WORKFLOW_LABELS[String(detail.node)] ?? String(detail.node ?? "");
     case "case":
       return detail.phase === "start"
         ? `kasus ${detail.index}/${detail.total}`
@@ -94,9 +139,9 @@ export function RunProgress({ job }: { job: RunJob }) {
   // Event dari run lain dibuang, jadi sisa run sebelumnya tidak terbaca sebagai progres.
   const mine = events.filter((event) => !event.run_id || event.run_id === job.id);
   const stages = STAGES[job.kind];
-  const reached = new Set(mine.map((event) => event.stage));
-  const latest = [...mine].reverse().find((event) => reached.has(event.stage) && stages.some((s) => s.key === event.stage));
-  const activeIndex = stages.findIndex((stage) => stage.key === latest?.stage);
+  const reached = new Set(mine.map(stageOf));
+  const latest = [...mine].reverse().find((event) => stages.some((stage) => stage.key === stageOf(event)));
+  const activeIndex = latest ? stages.findIndex((stage) => stage.key === stageOf(latest)) : -1;
   // Kasus dihitung selesai saat kartunya tersimpan, bukan saat gate lewat.
   const finished = mine.filter((event) => event.stage === "case" && event.detail?.phase === "end").length;
   const caseTotal = mine.find((event) => event.stage === "case")?.detail?.total;
@@ -148,7 +193,7 @@ export function RunProgress({ job }: { job: RunJob }) {
                 </time>
                 <span className="run-timeline__ticker">{event.ticker === "*" ? "—" : event.ticker}</span>
                 <span className="run-timeline__stage">
-                  {stages.find((stage) => stage.key === event.stage)?.label ?? event.stage}
+                  {stages.find((stage) => stage.key === stageOf(event))?.label ?? event.stage}
                 </span>
                 <span className="run-timeline__detail">{summarise(event)}</span>
               </li>
