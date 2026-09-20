@@ -97,7 +97,7 @@ def capture(args):
         raise SystemExit('Gunakan direktori capture baru; snapshot lama tidak ditimpa.')
     output.mkdir(parents=True)
     settings = settings.model_copy(update={'research_cases_dir': output / 'cases'})
-    engine, client = build_provider(settings), SectorsClient(settings.sectors_api_key)
+    engine, client = build_provider(settings), SectorsClient(settings.sectors_api_keys)
     manifest = {'created_at': datetime.now(timezone.utc).isoformat(), 'mode': 'live_read_only',
                 'evaluation_type': 'current_snapshot_not_historical_backtest', 'cases': []}
     try:
@@ -106,7 +106,6 @@ def capture(args):
             if not separator or not ticker.isalnum() or not url.startswith(('https://', 'http://')):
                 raise SystemExit('Format --case TICKER=https://...')
             ticker = ticker.upper()
-            # One Sectors report request per case; news discovery can be done separately.
             report = client.company_report(ticker)
             event = CandidateEvent(ticker=ticker, headline=f'{ticker}: evaluasi sumber', source_url=url,
                                    body='', published_at='', bucket=ActionBucket.general_action, matched_keywords=[])

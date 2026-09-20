@@ -1,0 +1,153 @@
+{
+  "runs": [
+    "IDEA-2026-09-19-c9fc6f4e"
+  ],
+  "ringkasan": {
+    "qwen2.5:7b -> gemma3:4b | semua": {
+      "klaim": 10,
+      "belum_dilabel": 0,
+      "tak_bisa_dinilai": 0,
+      "tertunda": 0,
+      "tampil": 6,
+      "tampil_putusan": {
+        "benar": 6
+      },
+      "presisi_ketat": 1.0,
+      "presisi_ketat_ci95": [
+        0.61,
+        1.0
+      ],
+      "presisi_longgar": 1.0,
+      "presisi_longgar_ci95": [
+        0.61,
+        1.0
+      ],
+      "ditolak": 4,
+      "ditolak_padahal_benar": 0,
+      "ditolak_oleh": {
+        "kode": 4
+      },
+      "klaim_salah": 4,
+      "klaim_salah_tertangkap": 4,
+      "tingkat_tangkap": 1.0
+    },
+    "qwen2.5:7b -> gemma3:4b | panel=fundamental": {
+      "klaim": 4,
+      "belum_dilabel": 0,
+      "tak_bisa_dinilai": 0,
+      "tertunda": 0,
+      "tampil": 4,
+      "tampil_putusan": {
+        "benar": 4
+      },
+      "presisi_ketat": 1.0,
+      "presisi_ketat_ci95": [
+        0.51,
+        1.0
+      ],
+      "presisi_longgar": 1.0,
+      "presisi_longgar_ci95": [
+        0.51,
+        1.0
+      ],
+      "ditolak": 0,
+      "ditolak_padahal_benar": 0,
+      "ditolak_oleh": {},
+      "klaim_salah": 0,
+      "klaim_salah_tertangkap": 0,
+      "tingkat_tangkap": null
+    },
+    "qwen2.5:7b -> gemma3:4b | panel=news": {
+      "klaim": 4,
+      "belum_dilabel": 0,
+      "tak_bisa_dinilai": 0,
+      "tertunda": 0,
+      "tampil": 1,
+      "tampil_putusan": {
+        "benar": 1
+      },
+      "presisi_ketat": 1.0,
+      "presisi_ketat_ci95": [
+        0.207,
+        1.0
+      ],
+      "presisi_longgar": 1.0,
+      "presisi_longgar_ci95": [
+        0.207,
+        1.0
+      ],
+      "ditolak": 3,
+      "ditolak_padahal_benar": 0,
+      "ditolak_oleh": {
+        "kode": 3
+      },
+      "klaim_salah": 3,
+      "klaim_salah_tertangkap": 3,
+      "tingkat_tangkap": 1.0
+    },
+    "qwen2.5:7b -> gemma3:4b | panel=valuation": {
+      "klaim": 2,
+      "belum_dilabel": 0,
+      "tak_bisa_dinilai": 0,
+      "tertunda": 0,
+      "tampil": 1,
+      "tampil_putusan": {
+        "benar": 1
+      },
+      "presisi_ketat": 1.0,
+      "presisi_ketat_ci95": [
+        0.207,
+        1.0
+      ],
+      "presisi_longgar": 1.0,
+      "presisi_longgar_ci95": [
+        0.207,
+        1.0
+      ],
+      "ditolak": 1,
+      "ditolak_padahal_benar": 0,
+      "ditolak_oleh": {
+        "kode": 1
+      },
+      "klaim_salah": 1,
+      "klaim_salah_tertangkap": 1,
+      "tingkat_tangkap": 1.0
+    },
+    "qwen2.5:7b -> gemma3:4b | split=dev": {
+      "klaim": 10,
+      "belum_dilabel": 0,
+      "tak_bisa_dinilai": 0,
+      "tertunda": 0,
+      "tampil": 6,
+      "tampil_putusan": {
+        "benar": 6
+      },
+      "presisi_ketat": 1.0,
+      "presisi_ketat_ci95": [
+        0.61,
+        1.0
+      ],
+      "presisi_longgar": 1.0,
+      "presisi_longgar_ci95": [
+        0.61,
+        1.0
+      ],
+      "ditolak": 4,
+      "ditolak_padahal_benar": 0,
+      "ditolak_oleh": {
+        "kode": 4
+      },
+      "klaim_salah": 4,
+      "klaim_salah_tertangkap": 4,
+      "tingkat_tangkap": 1.0
+    }
+  },
+  "lolos_padahal_bermasalah": [],
+  "ditolak_padahal_benar": [],
+  "label": {
+    "tidak_valid": [],
+    "konflik": [],
+    "kesepakatan": null
+  },
+  "catatan": "Presisi ketat: hanya 'benar'. Longgar: 'benar' + 'berlebihan'. Satu klaim dihitung sekali per run; run replay dengan konfigurasi sama tidak ikut dihitung kecuali disebut lewat --run."
+}

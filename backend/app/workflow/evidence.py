@@ -14,10 +14,13 @@ from app.research.facts import locate_quote
 
 _DENY = [(term, re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)) for term in DENYLIST_TERMS]
 NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)*")
-# Angka yang menempel pada huruf adalah bagian nama (SMA20, RSI14, Q2), bukan angka yang diklaim.
-# Kecualikan awalan mata uang: "Rp4,35 triliun" harus terbaca sebagai satu angka, bukan "35".
 CURRENCY_PREFIX = ("rp",)
 ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+IDENTIFIER = re.compile(r"`?\b[A-Za-z][\w-]*:[\w:.-]+\b`?")
+LOWER_WORDS = ("lebih rendah", "di bawah", "lebih kecil", "lebih murah")
+HIGHER_WORDS = ("lebih tinggi", "di atas", "lebih besar", "lebih mahal")
+COMPARATOR = re.compile(r"(lebih rendah|lebih tinggi|lebih kecil|lebih besar|lebih murah|lebih mahal|di bawah|di atas)",
+                        re.IGNORECASE)
 
 
 def number_tokens(text: str) -> list[str]:
@@ -33,8 +36,6 @@ def number_tokens(text: str) -> list[str]:
 def denied_terms(text: str) -> list[str]:
     return sorted({term for term, pattern in _DENY if pattern.search(text or "")})
 
-
-# ---- Format angka Indonesia ---------------------------------------------------------------------
 
 def _decimal(value: float, digits: int) -> str:
     text = f"{abs(value):,.{digits}f}"
@@ -63,8 +64,6 @@ def display(metric: dict) -> str:
     signed = metric["unit"] == "ratio" and any(word in metric["metric_id"] for word in ("growth", "return", "_vs_"))
     return format_value(metric.get("value"), metric["unit"], signed)
 
-
-# ---- Pencocokan angka ---------------------------------------------------------------------------
 
 def _candidates(token: str) -> list[tuple[float, int]]:
     """Semua tafsiran wajar sebuah token angka, beserta jumlah digit desimalnya."""
@@ -116,7 +115,8 @@ def unexplained_numbers(statement: str, metrics: list[dict], allowed_text: str =
     """
     literal = {token.lstrip("+-") for token in number_tokens(allowed_text)}
     literal |= {token for text in (allowed_text,) for token in ISO_DATE.findall(text)}
-    text = ISO_DATE.sub(lambda match: " " if match.group(0) in literal else match.group(0).replace("-", " "), statement)
+    text = IDENTIFIER.sub(" ", statement)
+    text = ISO_DATE.sub(lambda match: " " if match.group(0) in literal else match.group(0).replace("-", " "), text)
     targets = [target for metric in metrics for target in _targets(metric)]
     unexplained = []
     for token in number_tokens(text):
@@ -136,8 +136,6 @@ def unexplained_numbers(statement: str, metrics: list[dict], allowed_text: str =
     return unexplained
 
 
-# ---- Pemeriksaan klaim --------------------------------------------------------------------------
-
 def with_input_metrics(metric_ids, metrics: dict[str, dict]) -> list[dict]:
     """Metrik yang dirujuk beserta metrik masukannya.
 
@@ -156,6 +154,79 @@ def with_input_metrics(metric_ids, metrics: dict[str, dict]) -> list[dict]:
     return collected
 
 
+def _metric_value_of(token: str, metrics: list[dict]) -> tuple[float, str, str] | None:
+    """(nilai, unit, metric_id) metrik yang dirujuk sebuah token angka, bila tepat satu yang cocok."""
+    found = []
+    for candidate, digits in _candidates(token):
+        tolerance = 0.5 * 10 ** (-digits) + 1e-9
+        for metric in metrics:
+            for target in _targets(metric):
+                if abs(abs(candidate) - abs(target)) <= tolerance:
+                    found.append((metric["value"], metric["unit"], metric["metric_id"]))
+    unique = list(dict.fromkeys(found))
+    return unique[0] if len(unique) == 1 else None
+
+
+def _is_difference(metric_id: str) -> bool:
+    """Metrik yang nilainya sendiri adalah selisih relatif ("33,3% di atas median")."""
+    return "_vs_" in metric_id
+
+
+def comparison_issues(statement: str, metrics: list[dict]) -> list[str]:
+    """Arah "X lebih rendah/tinggi dari Y" harus sesuai nilai metrik X dan Y.
+
+    Pemeriksaan angka hanya memastikan angkanya ada; ia tidak melihat bahwa "2,05x lebih rendah dari
+    1,87x" terbalik. Pada run live IDEA 19/09/2026 kalimat itu lolos dan pembanding 4B menyetujuinya.
+    Hanya dibandingkan bila kedua angka menunjuk tepat satu metrik dengan unit yang sama.
+    """
+    issues = []
+    text = IDENTIFIER.sub(" ", statement)
+    for clause in re.split(r"[.;]\s|,\s(?=sementara|sedangkan|dan\s)", text):
+        match = COMPARATOR.search(clause)
+        if not match:
+            continue
+        before = number_tokens(clause[:match.start()])
+        after = number_tokens(clause[match.end():])
+        if not before or not after:
+            continue
+        left, right = _metric_value_of(before[-1], metrics), _metric_value_of(after[0], metrics)
+        word = match.group(1).lower()
+        says_lower = word in LOWER_WORDS
+        difference = next(((side, token) for side, token in ((left, before[-1]), (right, after[0]))
+                           if side and _is_difference(side[2])), None)
+        if difference:
+            (value, _unit, _metric_id), token = difference
+            if value != 0 and says_lower != (value < 0):
+                issues.append(f"Arah perbandingan salah: selisih {token} bertanda "
+                              f"{'negatif' if value < 0 else 'positif'}, tetapi kalimat menyebut "
+                              f"{'lebih rendah' if says_lower else 'lebih tinggi'}.")
+            continue
+        if not left or not right:
+            continue
+        if left[1] != right[1]:
+            issues.append(f"Membandingkan besaran berbeda unit ({left[1]} dengan {right[1]}): "
+                          f"{before[-1]} dan {after[0]} tidak bisa dibandingkan.")
+            continue
+        if left[0] == right[0]:
+            continue
+        if says_lower != (left[0] < right[0]):
+            relation = "lebih rendah" if says_lower else "lebih tinggi"
+            issues.append(f"Arah perbandingan salah: kalimat menyatakan {before[-1]} {relation} dari {after[0]}, "
+                          "padahal nilai metriknya sebaliknya.")
+    return issues
+
+
+def identity_issue(claim: dict, identity: list[str]) -> str | None:
+    """Klaim berita harus tentang emiten ini, bukan emiten lain yang kebetulan satu artikel."""
+    if claim.get("domain") != "news" or claim.get("author", "code") == "code" or not identity:
+        return None
+    text = f"{claim.get('statement') or ''} {claim.get('quote') or ''}".lower()
+    for name in identity:
+        if name and re.search(rf"\b{re.escape(name.lower())}\b", text):
+            return None
+    return f"Klaim tidak menyebut emiten ({', '.join(name for name in identity if name)}); bisa jadi tentang emiten lain di artikel yang sama."
+
+
 def _available(source: dict) -> date | None:
     value = source.get("available_at")
     try:
@@ -165,7 +236,7 @@ def _available(source: dict) -> date | None:
 
 
 def check_claim(claim: dict, metrics: dict[str, dict], sources: dict[str, dict], source_texts: dict[str, str],
-                ticker: str, as_of: date) -> list[str]:
+                ticker: str, as_of: date, identity: list[str] | None = None) -> list[str]:
     """Daftar masalah mekanis; kosong berarti lolos pemeriksaan kode."""
     issues = []
     metric_refs = claim.get("metric_ids") or []
@@ -208,6 +279,10 @@ def check_claim(claim: dict, metrics: dict[str, dict], sources: dict[str, dict],
     numbers = unexplained_numbers(claim.get("statement", ""), referenced_metrics, allowed)
     if numbers:
         issues.append(f"Angka tanpa dasar metrik/sumber: {', '.join(numbers)}.")
+    issues += comparison_issues(claim.get("statement", ""), referenced_metrics)
+    who = identity_issue(claim, identity if identity is not None else [ticker])
+    if who:
+        issues.append(who)
     terms = denied_terms(" ".join([claim.get("statement", ""), *claim.get("limitations", []), *claim.get("assumptions", [])]))
     if terms:
         issues.append(f"Bahasa transaksi/penilaian tidak diizinkan: {', '.join(terms)}.")

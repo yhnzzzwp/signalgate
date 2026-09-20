@@ -39,7 +39,6 @@ settings = get_settings()
 session_factory = build_session_factory(settings)
 register_routes(app, session_factory)
 run_lock = Lock()
-# Event pembatalan per run laporan, hanya untuk run yang berjalan di proses ini.
 workflow_cancellations: dict[str, Event] = {}
 
 
@@ -54,7 +53,7 @@ def workflow_progress(phase: str, node: str, detail: dict) -> None:
 
 
 workflow_runner = WorkflowRunner(settings, session_factory,
-                                 client_factory=lambda: SectorsClient(api_key=settings.sectors_api_key),
+                                 client_factory=lambda: SectorsClient(api_key=settings.sectors_api_keys),
                                  progress=workflow_progress)
 
 with session_factory() as _session:
@@ -86,7 +85,6 @@ def start_job(kind: str, work) -> dict:
         run_lock.release()
         raise
     run_events.set_run(payload["id"])
-    # Sebelum thread mulai: run yang gagal seketika tidak boleh menutup dirinya sebelum dibuka.
     run_events.publish("run", "*", {"phase": "start", "kind": kind})
 
     def runner() -> None:
@@ -95,7 +93,7 @@ def start_job(kind: str, work) -> dict:
             with session_factory() as session:
                 jobs.finish(session, payload["id"], result)
             run_events.publish("run", "*", {"phase": "end", "status": jobs.COMPLETED, **result})
-        except BaseException as error:  # noqa: BLE001 - kegagalan apa pun harus menutup job
+        except BaseException as error:
             with session_factory() as session:
                 jobs.fail(session, payload["id"], f"{type(error).__name__}: {error}")
             run_events.publish("run", "*", {"phase": "end", "status": jobs.FAILED,
@@ -116,7 +114,7 @@ def trigger_pipeline() -> dict:
         provider = None
         try:
             provider = build_provider(settings)
-            client = SectorsClient(api_key=settings.sectors_api_key)
+            client = SectorsClient(api_key=settings.sectors_api_keys)
             with session_factory() as session:
                 run = run_pipeline(client, provider, session, settings.pipeline_max_events)
             return {"screened_count": len(run.results), "already_processed": run.already_processed,
@@ -160,7 +158,6 @@ def trigger_scan(limit: int = 3) -> dict:
                                    {"phase": "start", "index": index, "total": total,
                                     "bucket": event.bucket.value})
 
-            # closing(): engine dilepas walau persist di tengah loop gagal.
             with closing(research_queue_items(settings, settings.scan_directory, limit,
                                               on_start=announce)) as researched:
                 for event, outcome, item in researched:
@@ -171,11 +168,7 @@ def trigger_scan(limit: int = 3) -> dict:
                     record_audit(session, stage="gate", ticker=event.ticker,
                                  detail={"status": screened.gate.status.value,
                                          "rejected_terms": screened.gate.rejected_terms})
-                    # dedupe_key: publikasi ulang kandidat yang sama memperbarui kartunya,
-                    # bukan menambah kartu kedua untuk satu aksi korporasi.
                     persist_screened_event(session, screened, dedupe_key=f"scan:{item['id']}")
-                    # Ditandai SETELAH commit. Kalau penyimpanan gagal, kandidat tetap belum
-                    # terpublikasi dan run berikutnya memulihkannya dari artefak tanpa model.
                     mark_published(settings.scan_directory, item["id"], item.get("case_id"))
                     screened_count += 1
                     run_events.publish("case", event.ticker,
@@ -202,7 +195,7 @@ def research_single_case(request: ResearchRequest) -> dict:
     provider = None
     try:
         provider = build_provider(settings)
-        client = SectorsClient(api_key=settings.sectors_api_key)
+        client = SectorsClient(api_key=settings.sectors_api_keys)
         event = CandidateEvent(**request.model_dump(), matched_keywords=[])
         snapshot = snapshot_company(client, event.ticker, event.sub_sector, FreeFloatLookup(client),
                                     valuation_lookup=SubsectorValuationLookup(client),
@@ -271,5 +264,4 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-# Lambda, bukan referensi langsung: gerbang Sectors dibaca ulang tiap permintaan (dan bisa ditambal test).
 register_workflow_routes(app, workflow_runner, start_job, lambda: require_sectors_key(), workflow_cancellations)

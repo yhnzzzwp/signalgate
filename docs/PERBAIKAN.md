@@ -335,3 +335,237 @@ Test backend: 90 lolos.
 | 3 | Contoh singkat (few-shot) di prompt: "menambah armada = core_expansion, bukan business_change/asset_injection" | Salah baca glm/llama pada HATM |
 | 4 | Waktu proses sekitar 130 dtk/kasus (PDF sekitar 6 menit): jalankan di background dengan progres, cache hasil per model | Rotasi tiga model menambah biaya muat model |
 | 5 | Kutipan penggunaan dana dianggap sama bila berbagi rangkaian kata panjang (misalnya ≥8 kata berurutan), bukan hanya bila salah satu memuat yang lain | APEX: glm dan analis mengutip kalimat yang sama dengan potongan berbeda |
+
+## 12. Evaluasi label manusia pertama, dua bug ditemukan, pindah ke profil workstation — 19 September 2026
+
+Alat baru `app/workflow/labels.py` (ekspor lembar CSV buta dari status sistem → manusia menilai →
+`score` menggabungkan). Panduan dan rubrik di `docs/PANDUAN_LABEL.md`. 11 emiten dijalankan live
+(~143 kredit): dev IDEA/BBRI/TLKM/INDR/MKNT/HATM/PTBA, holdout BMRI/ICBP/TFCO/LAPD/MGLV (belum
+dilabel/dibuka, run_id tersimpan di `data/labels/holdout-runs.txt`).
+
+### Skor awal (analis qwen2.5:7b, pembanding gemma3:4b), 57 klaim dari 7 emiten dev
+
+Presisi ketat 88% (CI95 72–95%), presisi longgar 91%, 8/12 klaim salah tertangkap, **9 klaim benar
+ikut tertolak**. Dua bug ditemukan langsung dari daftar kerja `score` ("lolos padahal bermasalah" /
+"ditolak padahal benar"):
+
+### Bug A — PB dihitung dari ekuitas yang salah (FIXED)
+
+`valuation:pb_mrq_calc` (`calculations.py`) membagi kapitalisasi pasar dengan `total_equity`, yang
+memuat ekuitas anak usaha milik minoritas. Untuk TLKM (anak usaha signifikan) itu ~12% dari total
+ekuitasnya.
+
+| Emiten | PB lama | PB Sectors sendiri | Broker pengguna |
+|---|---|---|---|
+| TLKM | 1,88x | 2,17x | ±2,14x |
+| BBRI | 1,51x | 1,55x | 1,56x |
+| HATM | 3,16x | 3,21x | 2,93x (tidak berubah setelah fix — lihat catatan di bawah) |
+
+PB Sectors sendiri (dari `peers.self.pb_mrq`) konsisten lebih dekat ke broker karena Sectors membagi
+dengan ekuitas milik induk saja. Perbaikan: metrik baru `fundamental:parent_equity_latest`
+(`stockholders_equity`, fallback ke `total_equity` bila tidak ada) dipakai untuk `pb_mrq_calc`;
+ditambah pengecekan konflik PB-vs-Sectors meniru yang sudah ada untuk PE. Replay TLKM setelah fix:
+1,88x → 2,14x, sekarang cocok dengan Sectors (2,17x) dan broker (±2,14x). Dikonfirmasi di 5 emiten
+lain, tidak ada regresi (HATM/PTBA/INDR yang minoritasnya kecil/nol nyaris tidak bergeser — sesuai
+dugaan; sisa selisih HATM vs broker berarti bukan bug ini, kemungkinan waktu snapshot dekat private
+placement barunya). 3 test baru, 428 test lolos.
+
+### Bug B — Pembanding gemma3:4b salah baca tanda metrik sendiri (FIXED via ganti model)
+
+Penyebab utama 7 dari 9 klaim benar yang tertolak. Contoh nyata dari catatan pembanding sendiri untuk
+klaim BBRI ("Pertumbuhan pendapatan menurun sebesar 9,2%", metrik = -9,2%):
+
+> *"Pernyataan tersebut menyatakan penurunan pertumbuhan pendapatan tahunan sebesar 9,2%, sedangkan
+> data menunjukkan pertumbuhan sebesar +9,2%"*
+
+Pembanding membalik tanda metrik yang seharusnya cuma dibaca ulang, lalu menandainya `contradicted`.
+Kasus lain menukar metrik FY dengan metrik YoY kuartalan sama sekali ("data menunjukkan +22,3%" untuk
+klaim laba FY yang metriknya -5,8%; +22,3% adalah `earnings_growth_yoy`, metrik berbeda). Percobaan
+pertama: perbaikan instruksi prompt (larang analis menggabungkan "menurun/turun" dengan tanda minus,
+tambah contoh penjelas di instruksi pembanding) — **tidak cukup**. Replay BBRI setelah perbaikan
+prompt: analis menulis frasa yang benar ("menurun sebesar 9,2%", tanpa minus), pembanding tetap
+menolak dengan alasan yang sama persis (tanda dibalik), plus dua klaim yang sebelumnya lolos ikut
+rusak.
+
+Uji definitif: evidence dan 8 klaim BBRI yang identik, hanya model pembanding diganti (replay, 0
+kredit).
+
+| Pembanding | Hasil pada 8 klaim BBRI yang sama |
+|---|---|
+| gemma3:4b | 5 dari 8 klaim benar ditolak keliru |
+| glm4:9b | 8 dari 8 lolos benar |
+
+Dikonfirmasi pada skala lebih besar: replay 5 emiten dev (BBRI, HATM, INDR, PTBA, MKNT; 37 klaim
+model, evidence dan tulisan analis identik, hanya pembanding diganti) — tingkat lolos naik dari
+13/37 (35%) ke 27/37 (73%). Catatan: kenaikan tingkat lolos sendiri belum membuktikan akurasi
+(pembanding yang asal menyetujui juga akan menaikkan angka ini); bukti akurasinya tetap perbandingan
+terhadap label manusia di BBRI di atas — angka skala besar ini hanya menunjukkan arahnya konsisten.
+
+Kesimpulan: bukan soal gaya bahasa, gemma3:4b (4B parameter) tidak cukup andal untuk tugas
+bandingkan-angka ini. Keputusan: **tidak ada model di bawah 8B parameter lagi** di proyek ini,
+untuk peran apa pun.
+
+### Perubahan konfigurasi
+
+- `backend/.env`: `SIGNALGATE_PROFILE=workstation` menggantikan `OLLAMA_MODEL`/`OLLAMA_REVIEWER_MODELS`
+  eksplisit → analis `qwen2.5:14b`, pembanding rotasi `glm4:9b` lalu `gemma3:12b`, timeout 900 dtk.
+  Mac pengembangan ini 16 GB unified memory (dicek `sysctl hw.memsize`), sesuai target profil.
+- `scripts_local/run_live.py`: berhenti menimpa `workflow_analyst_model`/`workflow_reviewer_model`
+  secara hardcode; sekarang ikut profil kecuali argumen CLI diisi eksplisit.
+- Instruksi prompt `RESEARCH_INSTRUCTION` dan `REVIEW_VERDICT_INSTRUCTION` (`prompts.py`) tetap
+  diperbaiki (frasa "menurun sebesar -X%" dilarang, contoh penjelas untuk pembanding) — tidak
+  menyelesaikan Bug B sendirian, tapi tetap kebersihan penulisan yang benar untuk model manapun.
+- Status saat catatan ini ditulis: unduhan `qwen2.5:14b` + `gemma3:12b` masih berjalan (koneksi
+  lambat, ~1-1,5 jam), dan replay ulang 7 emiten dev dengan analis qwen2.5:7b (sementara, sambil
+  menunggu 14b) + pembanding glm4:9b sedang berjalan di latar belakang.
+
+### Belum diperbaiki, dicatat untuk lanjutan
+
+| Temuan | Contoh | Keputusan |
+|---|---|---|
+| HATM: 3 klaim private placement, 3 angka saham berbeda (640jt/7,37%, 868jt/10%, 800jt/9,22%) | Ternyata dari 4 artikel tanggal berbeda meliput tahap berbeda aksi korporasi yang sama (rencana → revisi → selesai); bukan salah baca | Perlu keputusan produk: artikel mana yang diutamakan saat angka berubah dari waktu ke waktu. Belum dikerjakan |
+| Kode terlalu ketat menolak selisih dua metrik yang dikutip benar | TLKM: "margin naik 2,0 poin" dari 14,2%→16,2%, ditolak karena `unexplained_numbers` tidak menghitung delta antar-metrik | Dampak kecil (1 kasus di 57 klaim), butuh desain hati-hati (kombinasi metrik mana yang bermakna); belum dikerjakan |
+
+## 13. Instalasi qwen2.5:14b selesai, uji replay 0-kredit, bug identitas emiten ditemukan dan diperbaiki — 19 September 2026
+
+Unduhan `qwen2.5:14b` (terhenti sebelumnya, koneksi lambat) dilanjutkan sampai selesai: `ollama show`
+mengonfirmasi 14,8B parameter, Q4_K_M, context length 32768, digest `7cdf5a0187d5`. `gemma3:12b` belum
+diunduh (di luar cakupan sesi ini). `.env` (`SIGNALGATE_PROFILE=workstation`) sudah menunjuk ke model ini
+tanpa perlu override lain, jadi berlaku otomatis.
+
+**Smoke test** (API Ollama langsung, `num_ctx=4096`): jawaban koheren, ~13 token/detik, load 8,7 detik.
+
+**Uji fungsional**: replay 0-kredit (`scripts_local/run_live.py <TICKER> glm4:9b <run_id lama>`) di dua
+emiten dev yang evidence-nya sudah tersimpan, analis `qwen2.5:14b` dari profil + pembanding tetap
+`glm4:9b` (validasi Bug B). Tidak menyentuh run_id holdout.
+
+### Bug ditemukan — `identity_issue` menolak parafrase nama BUMN tanpa "(Persero)" (FIXED)
+
+Replay TLKM pertama: 6 dari 6 klaim model di panel news ditolak dengan alasan sama, "Klaim tidak
+menyebut emiten". qwen2.5:14b menulis "PT Telkom Indonesia Tbk" (parafrase wajar, tanpa anotasi bentuk
+badan hukum), sementara `_identity()` (`app/workflow/nodes.py`) hanya menghasilkan tiga bentuk dari nama
+resmi ("TLKM", "PT Telkom Indonesia (Persero) Tbk", "Telkom Indonesia (Persero)") — ketiganya
+mensyaratkan literal "(Persero)" hadir di kalimat, jadi tidak ada yang cocok.
+
+Ini bukan bug baru dari 14B; baseline interim `qwen2.5:7b` sebelumnya **tidak pernah sampai
+menghasilkan klaim news sama sekali** untuk TLKM/BBRI (lihat `model_gap`: "output terpotong batas
+token" di run-run awal), jadi celah ini baru kelihatan sekarang setelah analis yang lebih besar berhasil
+mengekstrak klaim.
+
+Perbaikan: `_name_variants()` (baru) menghasilkan varian nama tanpa anotasi kurung selain varian
+tanpa "PT"/"Tbk" yang sudah ada, dipakai oleh `_identity()`. 4 test baru di
+`tests/test_workflow_graph.py` (`NameVariantsTests`), termasuk regresi langsung memakai kalimat asli
+qwen2.5:14b yang tertolak. Full suite: 432 lolos (naik dari 428).
+
+Replay ulang TLKM setelah fix: 0 dari 6 klaim ditolak karena identitas (turun dari 6/6). Replay BBRI
+(base run pra-Bug-B, analis+pembanding lama) dengan analis 14B: seluruh klaim "PT Bank Rakyat Indonesia
+Tbk" juga lolos pemeriksaan identitas. Fundamental & valuation tidak berubah oleh fix ini (di luar
+domain news, `identity_issue` tidak berlaku).
+
+### Temuan baru, belum diperbaiki — pembanding news kehabisan konteks
+
+Setelah fix di atas, klaim news TLKM/BBRI tidak lagi tertolak identitas, tapi mentok masalah lain:
+pembanding `glm4:9b` gagal untuk *semua* klaim news pada kedua emiten — "prompt 24422–24673 karakter
+melebihi batas konteks 21504" — sehingga klaim tertahan status `pending`, bukan `supported`/`rejected`.
+Kemungkinan besar ini juga tersembunyi sebelumnya oleh bug identitas (klaim keburu tertolak duluan
+sebelum sampai ke pembanding). Butuh keputusan: pecah batch klaim news per panggilan pembanding, atau
+naikkan `workflow_num_ctx`/budget khusus role reviewer-news, atau pangkas panjang kutipan yang dikirim.
+Belum dikerjakan.
+
+### Sanity lain yang tercatat dari kedua replay
+
+- BBRI: mekanisme `comparison_issues` menangkap sendiri klaim PE TTM dan PB MRQ 14B yang salah arah
+  ("7,97x sedikit lebih tinggi" padahal Sectors 8,02x lebih tinggi) — validator kode bekerja seperti
+  dirancang, bukan bug baru.
+- Memori/performa (M1 Pro 16 GB): `qwen2.5:14b` resident 100% GPU ~10 GB saat aktif, unload bersih antar
+  role (`OLLAMA_OFFLOAD_BETWEEN_MODELS=true`), swap naik ke ±1 GB lalu pulih, tidak ada crash. Satu run
+  penuh (analis+pembanding, replay) ≈ 6,6–8,2 menit, 0 kredit Sectors.
+
+Status: **belum di-commit** (fix `_name_variants` + test baru termasuk di working tree, sama seperti
+perubahan lain yang tercatat di file ini).
+
+## 14. Key Sectors cadangan dengan rotasi otomatis — 20 September 2026
+
+User punya key Sectors kedua (kuota/kredit terpisah dari yang lama). Dipasang sebagai cadangan yang
+otomatis dipakai kalau key utama kehabisan kredit, bukan pengganti — mengurangi risiko run macet di
+tengah demo juri hanya karena satu key habis kuota.
+
+### Perubahan
+
+- `backend/app/sectors/client.py`: `SectorsClient` menerima satu key atau daftar key. `get()` kini
+  membaca `code` di body error JSON (`insufficient_credits`, `monthly_limit_exceeded`,
+  `subscription_not_active`, `subscription_does_not_allow` — sesuai
+  [changelog v2 Sectors](https://docs.sectors.app/api-references/v2/changelog), entri "structured
+  error codes" 2026-07-31) atau HTTP 429, lalu pindah ke key berikutnya dan mengulang permintaan yang
+  sama. Error lain (mis. 500/400/503 `service_unavailable`) langsung dilempar tanpa mencoba key
+  cadangan, karena semua key akan gagal dengan cara yang sama — mencoba lagi cuma buang panggilan.
+  Key duplikat otomatis digabung supaya key mati tidak dicoba dua kali secara identik.
+- `backend/app/config.py`: field baru `sectors_api_key_backups` (`SECTORS_API_KEY_BACKUPS`, JSON list)
+  + properti `sectors_api_keys` yang menggabungkan key utama dan cadangan tanpa duplikat.
+- `backend/app/main.py` (3 titik) dan `backend/app/evaluate.py`: konstruksi `SectorsClient` sekarang
+  memakai `settings.sectors_api_keys` (daftar), bukan `settings.sectors_api_key` (satu string).
+- `backend/.env.example`: dokumentasi `SECTORS_API_KEY_BACKUPS=[]`. `backend/.env` (tidak di-commit)
+  sudah diisi key kedua sebagai cadangan.
+- 5 test baru di `tests/test_sectors_client.py` (`KeyRotationTests`): rotasi saat kredit habis, rotasi
+  saat HTTP 429 tanpa `code` yang dikenali, error tak terkait langsung dilempar (key cadangan tidak
+  ikut kepakai), key habis di semua slot tetap melempar error, key duplikat tidak diulang dua kali.
+  Full suite: 437 lolos (naik dari 432).
+
+### Catatan
+
+HTTP status persis yang dipakai Sectors untuk tiap `code` tidak didokumentasikan publik (changelog
+cuma menyebut 503 untuk `service_unavailable`); rotasi jadi bergantung ke field `code` di body, bukan
+status code, supaya tidak salah tebak lalu diam-diam menyembunyikan error lain sebagai "kuota habis".
+
+Status: **belum di-commit**.
+
+## 15. Klaim berita pembanding kehabisan konteks (dari temuan #13) — diperbaiki, 20 September 2026
+
+Kelanjutan temuan belum-diperbaiki di bagian 13: `glm4:9b` gagal untuk semua klaim news TLKM/BBRI
+karena `verdict_packet` (packet + catatan independen + daftar klaim) tidak pernah dihitung ke budget
+karakter, hanya packet mentahnya saja. Ini bug kode di `review_node`, bukan soal kapabilitas model —
+`max_prompt_chars` adalah pagar yang kita pasang sendiri dari `WORKFLOW_NUM_CTX`/`WORKFLOW_NUM_PREDICT`,
+berlaku sama untuk model apa pun di peran reviewer.
+
+### Perbaikan pertama (belum cukup) — batch klaim per panggilan
+
+`app/workflow/prompts.py`: fungsi baru `claim_batches()` memecah daftar klaim jadi beberapa batch yang
+masing-masing muat di sisa budget, dipakai `review_node()` supaya panggilan "putusan pembanding" tidak
+lagi satu panggilan raksasa berisi semua klaim sekaligus. Packet juga dibangun ke budget instruksi
+putusan (lebih ketat dari budget instruksi notes), bukan cuma budget notes seperti sebelumnya.
+
+Replay 0-kredit TLKM (`scripts_local/run_live.py TLKM glm4:9b TLKM-2026-09-19-4c5d4284`) langsung
+sembuh: 2 panggilan putusan terpisah (5222 & 8476 karakter), tidak ada klaim `pending`. Tapi replay
+BBRI (`BBRI-2026-09-19-1214d525`) masih gagal berulang — 10 panggilan gagal berturut-turut, semua di
+kisaran 21818–21920 karakter.
+
+### Bug kedua, ditemukan dari replay BBRI — packet tidak menyisakan ruang untuk catatan independen
+
+Sebab: packet berita di-fit sampai HAMPIR PENUH ke budget-nya (`fit()` selalu greedy mengisi sampai
+batas), lalu `catatan_independen_anda` (hasil panggilan pertama, ukurannya baru diketahui setelah
+panggilan itu selesai) ditambahkan di atasnya tanpa disisihkan ruang dari awal. Untuk BBRI, packet +
+catatan independen SENDIRIAN sudah menghabiskan budget putusan sebelum satu klaim pun ditambahkan,
+jadi `claims_budget` jatuh ke 0 dan setiap klaim terpaksa dipaksa masuk sendirian (jalur darurat di
+`claim_batches()`) — dan tetap overflow karena memang tidak ada ruang sama sekali.
+
+Perbaikan: `notes_reserve = settings.workflow_num_predict * CHARS_PER_TOKEN` (batas keluaran maksimum
+model untuk panggilan catatan independen, ±3.072 karakter di profil workstation) disisihkan dari budget
+packet SEJAK DIBANGUN, bukan baru dikurangi setelah notes-nya balik.
+
+### Verifikasi
+
+Replay ulang BBRI dengan fix kedua: 5 panggilan putusan, semua `ok=True` (4983–20544 karakter, semua di
+bawah batas 21504), tidak ada satupun error konteks. Keenam klaim berita mendapat putusan nyata (5
+`supported`, 1 `unsupported` karena kutipan memang tidak ditemukan — bukan overflow). Replay TLKM tetap
+bersih di kedua fix.
+
+- `tests/test_workflow_prompts.py` (baru): 4 test murni untuk `claim_batches()` — muat satu batch,
+  pecah ke beberapa batch dan tetap mencakup semua klaim, klaim tunggal kelebihan ukuran tetap dapat
+  batch sendiri (tidak infinite loop), daftar kosong.
+- `tests/test_workflow_graph.py`: 1 test baru (`test_review_splits_many_claims_into_batches_...`) — 6
+  klaim berita dengan budget kecil menghasilkan >1 panggilan `ReviewVerdicts`, semua klaim tetap dapat
+  putusan. Helper `pool()` dan `FakePool` diberi parameter `budget` opsional.
+- `backend/scripts_local/run_live.py`: ikut dipindah ke `settings.sectors_api_keys` (lihat bagian 14).
+- Full suite: 442 lolos (naik dari 437).
+
+Status: **belum di-commit**.

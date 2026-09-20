@@ -17,12 +17,13 @@ from sqlalchemy import select
 from app.db.models import ScreenedEventRecord, WorkflowReportRecord, WorkflowRunRecord
 from app.workflow import calculations as calc
 from app.workflow import prompts, templates
-from app.workflow.evidence import check_claim, denied_terms, unexplained_numbers, with_input_metrics
+from app.workflow.evidence import (check_claim, comparison_issues, denied_terms, unexplained_numbers,
+                                   with_input_metrics)
+from app.research.agents import CHARS_PER_TOKEN
 from app.workflow.models import ANALYST, REVIEWER, ModelPool
 from app.workflow.snapshot import SnapshotStore, fetch_snapshot, now_iso, today_wib
 from app.workflow.state import DOMAINS, MAX_REPAIRS, SCHEMA_VERSION
 
-# Batas lapor OJK dipakai konservatif: laporan kuartal belum tentu tersedia pada hari kuartal berakhir.
 ANNUAL_LAG_DAYS, QUARTER_LAG_DAYS = 90, 60
 PROMPT_HEADROOM = 800
 
@@ -56,8 +57,6 @@ def _ok_sources(state, kind=None):
     return {key: value for key, value in state.get("sources", {}).items()
             if value.get("status") == "ok" and (kind is None or value.get("kind") == kind)}
 
-
-# ---------------------------------------------------------------------------------------------------
 
 def plan_node(state, ctx: Context) -> dict:
     """Rencana dibentuk kode: empat dimensi wajib, tidak ada yang boleh dihapus model."""
@@ -248,6 +247,27 @@ def _company_view(state, ctx: Context) -> dict:
             "horizon": state["request"]["horizon"]}
 
 
+def _strip_parenthetical(text: str) -> str:
+    """Lepas anotasi dalam kurung, mis. "(Persero)", yang berita/model sering hilangkan saat parafrase."""
+    return re.sub(r"\s{2,}", " ", re.sub(r"\s*\([^)]*\)", "", text)).strip()
+
+
+def _name_variants(name: str) -> list[str]:
+    """Variasi nama emiten yang lazim di berita: dengan/tanpa "PT"/"Tbk", dan tanpa anotasi kurung
+    seperti "(Persero)" (mis. qwen2.5:14b menulis "PT Telkom Indonesia Tbk" tanpa "(Persero)")."""
+    if not name:
+        return []
+    short = re.sub(r"^\s*PT\.?\s+|\s+Tbk\.?\s*$", "", name, flags=re.IGNORECASE).strip()
+    return [name, short, _strip_parenthetical(name), _strip_parenthetical(short)]
+
+
+def _identity(state, ctx: Context) -> list[str]:
+    """Ticker dan variasi nama emiten yang lazim di berita (lihat `_name_variants`)."""
+    name = _company_view(state, ctx).get("nama") or ""
+    candidates = [state["request"]["ticker"], *_name_variants(name)]
+    return [item for item in dict.fromkeys(candidates) if item]
+
+
 def _budget(ctx: Context, role: str, instruction: str) -> int:
     total = ctx.models.budget(role) if ctx.models else 0
     return max(0, total - len(prompts.RULES) - len(instruction) - PROMPT_HEADROOM)
@@ -302,7 +322,7 @@ def news_node(state, ctx: Context) -> dict:
     articles, _duplicates = _unique_articles(state, ctx.store)
     if not articles:
         panel["limitations"].append("Tidak ada artikel untuk dibaca model.")
-        return {"panels": {**state["panels"], "news": panel}, "events": []}  # bukan model_gap: memang tidak ada bahan
+        return {"panels": {**state["panels"], "news": panel}, "events": []}
     budget = _budget(ctx, ANALYST, prompts.NEWS_INSTRUCTION)
     packet, dropped = prompts.news_packet(_company_view(state, ctx), articles, state.get("corporate_actions") or [],
                                           budget)
@@ -336,11 +356,12 @@ def mechanical_node(state, ctx: Context) -> dict:
     texts = {key: ctx.store.text(source) for key, source in sources.items()
              if source.get("kind") in {"sectors_news", "sectors_corporate_actions"} and source.get("path")}
     repaired = set(state.get("repaired_claim_ids") or [])
+    identity = _identity(state, ctx)
     panels, failures = {}, {}
     for domain, panel in state["panels"].items():
         claims = []
         for claim in panel["claims"]:
-            issues = check_claim(claim, metrics, sources, texts, state["request"]["ticker"], _as_of(state))
+            issues = check_claim(claim, metrics, sources, texts, state["request"]["ticker"], _as_of(state), identity)
             reviewed = list(claim.get("review_notes") or [])
             updated = {**claim, "mechanical_issues": list(issues), "review_notes": reviewed,
                        "validation_notes": [*issues, *reviewed]}
@@ -386,25 +407,34 @@ def review_node(state, ctx: Context) -> dict:
                                                                     state.get("corporate_actions") or [], budget),
                         news_claims))
     problems = []
+    notes_reserve = ctx.settings.workflow_num_predict * CHARS_PER_TOKEN
     for label, build, claims in packets:
-        packet, _dropped = build(_budget(ctx, REVIEWER, prompts.REVIEW_NOTES_INSTRUCTION))
+        verdict_budget = _budget(ctx, REVIEWER, prompts.REVIEW_VERDICT_INSTRUCTION)
+        packet_budget = min(_budget(ctx, REVIEWER, prompts.REVIEW_NOTES_INSTRUCTION),
+                            max(0, verdict_budget - notes_reserve))
+        packet, _dropped = build(packet_budget)
         notes, error = ctx.models.call(REVIEWER, prompts.prompt(prompts.REVIEW_NOTES_INSTRUCTION, packet),
                                        prompts.ReviewNotes) if ctx.models else (None, "Pembanding tidak tersedia.")
         if error:
             problems.append(f"Pembacaan independen {label} gagal: {error}")
             continue
         notes_store[label] = notes.model_dump(mode="json")
-        verdict_packet = {**packet, "catatan_independen_anda": notes_store[label],
-                          "klaim_analis": [prompts.claim_view(claim) for claim in claims]}
-        result, error = ctx.models.call(REVIEWER, prompts.prompt(prompts.REVIEW_VERDICT_INSTRUCTION, verdict_packet),
-                                        prompts.ReviewVerdicts)
-        if error:
-            problems.append(f"Putusan pembanding {label} gagal: {error}")
-            continue
-        known = {claim["claim_id"] for claim in claims}
-        for verdict in result.verdicts:
-            if verdict.claim_id in known:
-                verdicts[verdict.claim_id] = (verdict.status, verdict.reason.strip())
+        base_packet = {**packet, "catatan_independen_anda": notes_store[label]}
+        claims_budget = max(0, verdict_budget - len(json.dumps(base_packet, ensure_ascii=False)))
+        batch_error = None
+        for batch in prompts.claim_batches(claims, claims_budget):
+            verdict_packet = {**base_packet, "klaim_analis": batch}
+            result, error = ctx.models.call(REVIEWER, prompts.prompt(prompts.REVIEW_VERDICT_INSTRUCTION, verdict_packet),
+                                            prompts.ReviewVerdicts)
+            if error:
+                batch_error = error
+                continue
+            known = {view["claim_id"] for view in batch}
+            for verdict in result.verdicts:
+                if verdict.claim_id in known:
+                    verdicts[verdict.claim_id] = (verdict.status, verdict.reason.strip())
+        if batch_error:
+            problems.append(f"Putusan pembanding {label} gagal: {batch_error}")
 
     panels = {}
     for domain, panel in state["panels"].items():
@@ -480,6 +510,7 @@ def repair_node(state, ctx: Context) -> dict:
             elif claim["claim_id"] in dropped:
                 reviewed = [*(claim.get("review_notes") or []), dropped[claim["claim_id"]]]
                 claims.append({**claim, "validation_status": "unsupported", "review_notes": reviewed,
+                               "withdrawn": True,
                                "validation_notes": [*(claim.get("mechanical_issues") or []), *reviewed]})
             else:
                 claims.append(claim)
@@ -510,6 +541,7 @@ def _section_issues(section, supported_by_id, metrics):
     numbers = unexplained_numbers(section["text"], allowed_metrics, allowed_text)
     if numbers:
         issues.append(f"Angka baru tanpa klaim pendukung: {', '.join(numbers)}.")
+    issues += comparison_issues(section["text"], allowed_metrics)
     terms = denied_terms(section["text"])
     if terms:
         issues.append(f"Bahasa transaksi/penilaian: {', '.join(terms)}.")
@@ -540,7 +572,6 @@ def synthesis_node(state, ctx: Context) -> dict:
             else:
                 sections.append({**section, "author": f"model:{ctx.models.name(ANALYST)}"})
     if not sections:
-        # Cadangan deterministik: kalimat disusun dari klaim yang sudah terverifikasi, tanpa angka baru.
         for domain in DOMAINS:
             picked = [claim for claim in state["panels"][domain]["claims"]
                       if claim["validation_status"] == "supported"][:2]
@@ -562,9 +593,9 @@ def _panel_status(domain, panel, metrics):
             return "insufficient_data"
     elif not has_metrics:
         return "insufficient_data"
-    if any(claim["validation_status"] != "supported" for claim in claims) or panel["conflicts"]:
+    if any(claim["validation_status"] != "supported" and not claim.get("withdrawn") for claim in claims) \
+            or panel["conflicts"]:
         return "needs_review"
-    # Angka lengkap tetapi tidak ada yang menafsirkannya: panelnya belum utuh, jadi jangan disebut selesai.
     return "needs_review" if panel.get("model_gap") else "completed"
 
 
@@ -582,7 +613,8 @@ def report_node(state, ctx: Context) -> dict:
     prose += [claim["statement"] for claim in _claims(state) if claim["validation_status"] == "supported"]
     rejected = denied_terms(" ".join(prose))
     statuses = {panel["status"] for panel in panels.values()}
-    unresolved = [claim["claim_id"] for claim in _claims(state) if claim["validation_status"] != "supported"]
+    unresolved = [claim["claim_id"] for claim in _claims(state)
+                  if claim["validation_status"] != "supported" and not claim.get("withdrawn")]
     if rejected or statuses & {"needs_review"} or synthesis["dropped"] or synthesis.get("error"):
         status = "needs_review"
     elif statuses & {"failed", "insufficient_data"}:

@@ -72,7 +72,6 @@ body {
   flex-wrap: wrap;
 }
 
-/* Jalur tanpa kredit API adalah default yang aman, jadi tampil sebagai aksi sekunder yang jelas. */
 .dashboard__actions .dashboard__run-button:first-child {
   background: transparent;
   color: var(--accent);
@@ -302,8 +301,6 @@ body {
   background: var(--surface-raised);
 }
 
-/* ---- Progres run: dibaca dari audit trail, bukan animasi berbasis waktu ---- */
-
 .run-progress {
   background: var(--surface, rgba(255, 255, 255, 0.03));
   border: 1px solid var(--accent);
@@ -392,15 +389,12 @@ body {
   line-height: 1.5;
 }
 
-/* Hormati preferensi sistem: gerakan dimatikan, informasinya tetap utuh. */
 @media (prefers-reduced-motion: reduce) {
   .run-progress__spinner,
   .run-progress__stage--active .run-progress__dot {
     animation: none;
   }
 }
-
-/* ---- Live timeline: satu baris per tahap, didorong backend lewat SSE ---- */
 
 .run-progress__headline {
   min-width: 0;
@@ -488,7 +482,6 @@ body {
   }
 }
 
-/* Rangkuman satu paragraf: jalan masuk pembaca sebelum daftar sinyal. */
 .event-card__summary {
   margin: 0 0 14px;
   padding: 12px 14px;
@@ -498,8 +491,6 @@ body {
   font-size: 13px;
   line-height: 1.65;
 }
-
-/* ---- Rincian pemeriksaan pada kartu ---- */
 
 .event-card__review {
   margin-top: 12px;
@@ -589,8 +580,6 @@ body {
   color: var(--accent);
 }
 
-/* ---- Paging & jejak audit ---- */
-
 .dashboard__paging {
   display: flex;
   justify-content: space-between;
@@ -656,8 +645,6 @@ body {
     grid-column: 1 / -1;
   }
 }
-
-/* ---- Tab bagian aplikasi & laporan empat panel ---- */
 
 .app__tabs {
   display: flex;
@@ -837,6 +824,11 @@ body {
 .workflow__claim--supported { border-left-color: var(--growth); }
 .workflow__claim--unsupported,
 .workflow__claim--contradicted { border-left-color: var(--red-flag); }
+
+.workflow__claim--withdrawn {
+  opacity: 0.55;
+  border-left-style: dashed;
+}
 
 .workflow__claim-text {
   margin: 0 0 4px;

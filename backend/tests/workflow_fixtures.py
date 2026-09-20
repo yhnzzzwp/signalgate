@@ -12,15 +12,15 @@ AS_OF = date(2026, 9, 18)
 
 
 def quarter(day: str, revenue, earnings, *, equity=4_000e9, liabilities=6_000e9, debt=2_000e9, ocf=150e9,
-            sector_metrics=None) -> dict:
+            sector_metrics=None, stockholders_equity=None) -> dict:
     return {"symbol": f"{TICKER}.JK", "date": day, "revenue": revenue, "earnings": earnings,
             "total_assets": equity + liabilities, "total_equity": equity, "total_liabilities": liabilities,
             "total_debt": debt, "operating_cash_flow": ocf, "investing_cash_flow": -50e9, "financing_cash_flow": -20e9,
-            "net_cash_flow": 80e9, "free_cash_flow": 100e9, "financials_sector_metrics": sector_metrics}
+            "net_cash_flow": 80e9, "free_cash_flow": 100e9, "financials_sector_metrics": sector_metrics,
+            "stockholders_equity": stockholders_equity}
 
 
 def quarterly() -> list[dict]:
-    # Sengaja tidak urut: klien harus mengurutkan sendiri.
     return [quarter("2026-03-31", 1_100e9, 90e9), quarter("2026-06-30", 1_200e9, 120e9),
             quarter("2025-09-30", 1_000e9, 80e9), quarter("2025-12-31", 1_050e9, 85e9),
             quarter("2025-06-30", 1_000e9, 100e9)]

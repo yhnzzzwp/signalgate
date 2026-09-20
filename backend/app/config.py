@@ -9,16 +9,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 Profile = Literal["laptop", "workstation"]
 
-# Hardware profiles change which local model reads the evidence, nothing else. They deliberately leave
-# PIPELINE_MAX_EVENTS alone: a faster GPU is no reason to spend more Sectors credits per run.
 PROFILES: dict[Profile, dict[str, object]] = {
     "laptop": {},
     "workstation": {
-        # Same family as the laptop analyst, so the extraction prompt and JSON schema behave the same.
         "ollama_model": "qwen2.5:14b",
-        # Three vendors, read in rotation with one model resident at a time. Reviewers exist to
-        # disagree, and models from one family tend to make the same mistake on the same sentence.
-        # Nothing here emits reasoning traces: make_agent() only suppresses those for qwen3.
         "ollama_reviewer_models": ["glm4:9b", "gemma3:12b"],
         "ollama_timeout_seconds": 900,
     },
@@ -30,6 +24,7 @@ class Settings(BaseSettings):
 
     signalgate_profile: Profile = "laptop"
     sectors_api_key: str = ""
+    sectors_api_key_backups: list[str] = Field(default_factory=list)
     sectors_api_enabled: bool = True
     llm_backend: Literal["ollama", "off"] = "ollama"
     ollama_base_url: str = "http://127.0.0.1:11434"
@@ -45,8 +40,6 @@ class Settings(BaseSettings):
     research_review_rounds: int = Field(default=1, ge=1, le=3)
     research_validator_mode: Literal["strict", "lenient"] = "strict"
     research_cache_ttl_seconds: int = Field(default=3600, ge=0, le=86400)
-    # Graph laporan empat panel. Prompt-nya kecil (metrik dan artikel terpilih), jadi konteksnya
-    # sengaja lebih kecil daripada jalur riset dokumen PDF yang butuh 16k.
     workflow_directory: Path = REPO_ROOT / "data" / "workflow"
     workflow_analyst_model: str | None = None
     workflow_reviewer_model: str | None = None
@@ -73,6 +66,13 @@ class Settings(BaseSettings):
     scan_directory: Path = REPO_ROOT / "data" / "scans"
     signalgate_db_path: str = "./signalgate.db"
 
+    @property
+    def sectors_api_keys(self) -> list[str]:
+        """Key utama diikuti key cadangan, tanpa duplikat, untuk SectorsClient(...)."""
+        keys = [self.sectors_api_key] if self.sectors_api_key else []
+        keys.extend(key for key in self.sectors_api_key_backups if key and key not in keys)
+        return keys
+
     def model_post_init(self, __context) -> None:
         """Apply the profile only where nothing was set explicitly.
 
@@ -83,8 +83,6 @@ class Settings(BaseSettings):
         for field, value in PROFILES[self.signalgate_profile].items():
             if field not in self.model_fields_set:
                 setattr(self, field, value)
-        # build_provider() takes the reviewer path whenever reviewers exist and never looks at the
-        # validator again. Failing here is kinder than silently running a model nobody asked for.
         if self.ollama_reviewer_models and "ollama_validator_model" in self.model_fields_set:
             raise ValueError(
                 "OLLAMA_VALIDATOR_MODEL diabaikan saat OLLAMA_REVIEWER_MODELS terisi. Pilih salah satu: "

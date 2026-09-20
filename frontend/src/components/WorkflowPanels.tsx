@@ -49,10 +49,17 @@ function formatValue(metric: WorkflowMetric): string {
 
 function ClaimRow({ claim }: { claim: WorkflowClaim }) {
   return (
-    <li className={`workflow__claim workflow__claim--${claim.validation_status}`}>
+    <li
+      className={`workflow__claim workflow__claim--${claim.validation_status} ${
+        claim.withdrawn ? "workflow__claim--withdrawn" : ""
+      }`}
+    >
       <p className="workflow__claim-text">{claim.statement}</p>
       <p className="event-card__source-meta">
-        {KIND_TEXT[claim.kind] ?? claim.kind} · {CLAIM_STATUS_TEXT[claim.validation_status] ?? claim.validation_status}
+        {KIND_TEXT[claim.kind] ?? claim.kind} ·{" "}
+        {claim.withdrawn
+          ? "ditarik analis setelah pemeriksaan"
+          : (CLAIM_STATUS_TEXT[claim.validation_status] ?? claim.validation_status)}
         {claim.author === "code" ? " · ditulis kode" : ` · ${claim.author}`}
         {claim.version > 1 && ` · versi ${claim.version}`}
         {claim.metric_ids.length > 0 && ` · metrik: ${claim.metric_ids.join(", ")}`}
@@ -93,8 +100,6 @@ function Panel({ panel, metrics }: { panel: WorkflowPanel; metrics: Record<strin
       {rows.length > 0 && (
         <details className="event-card__review">
           <summary>Metrik dan formulanya ({rows.length})</summary>
-          {/* Daftar, bukan tabel: di dalam kolom panel yang sempit, formula pada sel tabel terpotong
-              per karakter dan justru tidak terbaca. */}
           <ul className="workflow__metric-list">
             {rows.map((metric) => (
               <li key={metric.metric_id} className={metric.status !== "ok" ? "workflow__metric--empty" : ""}>

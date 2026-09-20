@@ -1,10 +1,24 @@
+import json
 import os
 import unittest
-from unittest.mock import patch
+from io import BytesIO
+from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 
 from app.pipeline.sense import (FreeFloatLookup, SubsectorValuationLookup, fetch_quarterly_financials,
                                 normalize_ticker, snapshot_company)
 from app.sectors.client import REPORT_SECTIONS, SectorsAPIError, SectorsClient
+
+
+def fake_http_error(status: int, code: str | None = None) -> HTTPError:
+    body = {"code": code} if code else {}
+    return HTTPError("https://api.sectors.app/v2/x/", status, "err", None, BytesIO(json.dumps(body).encode()))
+
+
+def fake_ok_response(payload: dict) -> MagicMock:
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+    return response
 
 
 class FakeClient:
@@ -54,7 +68,7 @@ class SectorsClientTests(unittest.TestCase):
         client.get = lambda path, **params: seen.update({"path": path, **params}) or {"company_name": "PT A"}
         client.company_report("BBCA")
         self.assertEqual(seen["sections"], ",".join(REPORT_SECTIONS))
-        self.assertNotIn("peers", seen["sections"])  # eight sections would bill eight credits
+        self.assertNotIn("peers", seen["sections"])
 
     @patch.dict(os.environ, {"SECTORS_API_KEY": "test-key"}, clear=True)
     def test_free_float_and_quarterly_hit_the_documented_paths(self):
@@ -66,6 +80,51 @@ class SectorsClientTests(unittest.TestCase):
         self.assertEqual(seen[0][0], "free-float")
         self.assertEqual(seen[0][1]["sub_sector"], "banks")
         self.assertEqual(seen[1], ("financials/quarterly/APEX", {"n_quarters": 4}))
+
+
+class KeyRotationTests(unittest.TestCase):
+    """A backup key exists to keep runs alive when the primary key's credit or monthly quota runs out."""
+
+    @patch("app.sectors.client.urlopen")
+    def test_rotates_to_the_backup_key_when_the_primary_reports_insufficient_credits(self, mock_urlopen):
+        client = SectorsClient(["key-a", "key-b"])
+        mock_urlopen.side_effect = [fake_http_error(402, code="insufficient_credits"), fake_ok_response({"ok": True})]
+        self.assertEqual(client.get("subsectors"), {"ok": True})
+        self.assertEqual(client.api_key, "key-b")
+        self.assertEqual(mock_urlopen.call_count, 2)
+
+    @patch("app.sectors.client.urlopen")
+    def test_rotates_on_a_bare_http_429_with_no_recognised_body_code(self, mock_urlopen):
+        client = SectorsClient(["key-a", "key-b"])
+        mock_urlopen.side_effect = [fake_http_error(429), fake_ok_response({"ok": True})]
+        self.assertEqual(client.get("subsectors"), {"ok": True})
+        self.assertEqual(client.api_key, "key-b")
+
+    @patch("app.sectors.client.urlopen")
+    def test_an_unrelated_error_is_raised_immediately_without_burning_the_backup_key(self, mock_urlopen):
+        client = SectorsClient(["key-a", "key-b"])
+        mock_urlopen.side_effect = fake_http_error(503, code="service_unavailable")
+        with self.assertRaises(SectorsAPIError):
+            client.get("subsectors")
+        self.assertEqual(client.api_key, "key-a")
+        self.assertEqual(mock_urlopen.call_count, 1)
+
+    @patch("app.sectors.client.urlopen")
+    def test_raises_once_every_key_is_also_exhausted(self, mock_urlopen):
+        client = SectorsClient(["key-a", "key-b"])
+        mock_urlopen.side_effect = [fake_http_error(402, code="insufficient_credits"),
+                                    fake_http_error(402, code="insufficient_credits")]
+        with self.assertRaises(SectorsAPIError):
+            client.get("subsectors")
+        self.assertEqual(mock_urlopen.call_count, 2)
+
+    @patch("app.sectors.client.urlopen")
+    def test_duplicate_keys_collapse_so_a_dead_key_is_not_retried_against_itself(self, mock_urlopen):
+        client = SectorsClient(["same", "same"])
+        mock_urlopen.side_effect = fake_http_error(402, code="insufficient_credits")
+        with self.assertRaises(SectorsAPIError):
+            client.get("subsectors")
+        self.assertEqual(mock_urlopen.call_count, 1)
 
 
 class FreeFloatLookupTests(unittest.TestCase):

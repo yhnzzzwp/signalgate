@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.workflow.evidence import display
 
-PROMPT_VERSION = "workflow-prompt-2026-09-18.1"
+PROMPT_VERSION = "workflow-prompt-2026-09-19.2"
 
 RULES = (
     "Kamu bagian dari alat riset saham Indonesia. Aturan yang tidak bisa dilanggar:\n"
@@ -25,12 +25,18 @@ RULES = (
     "4. Jangan menulis rekomendasi beli/jual, target harga, nilai wajar, atau penilaian bahwa saham "
     "bagus/buruk. Tugasmu menjelaskan data, bukan menyuruh bertindak.\n"
     "5. Bila data tidak cukup, katakan kekurangannya di `limitations` dan jangan menebak.\n"
+    "6. Tulis semua kalimat dalam Bahasa Indonesia, walaupun sumbernya berbahasa Inggris.\n"
+    "7. Jangan menulis ID metrik, sumber, atau klaim di dalam kalimat; ID hanya di field yang disediakan.\n"
 )
 
 RESEARCH_INSTRUCTION = (
     "Jelaskan kondisi fundamental dan valuasi emiten dari metrik yang sudah dihitung kode.\n"
     "- `fundamental`: pertumbuhan, profitabilitas, arus kas, dan risiko neraca.\n"
     "- `valuation`: bagaimana penilaian pasar dibanding data bisnis dan pembanding.\n"
+    "Periksa arah setiap perbandingan: angka yang lebih besar berarti lebih tinggi.\n"
+    "Saat metrik pertumbuhan bernilai negatif, jangan gabungkan kata \"menurun/turun\" dengan tanda minus "
+    "(bukan \"menurun sebesar -9,2%\", tapi \"menurun sebesar 9,2%\" atau \"tumbuh -9,2%\") — kombinasi "
+    "keduanya terbaca sebagai kontradiksi dan akan ditolak walau angkanya benar.\n"
     "Tiap klaim: satu kalimat, sebutkan periodenya, dan rujuk metrik yang mendasarinya. Bedakan fakta "
     "dari tafsiran, dan sebut keterbatasan basis data (misalnya periode berbeda atau peer sedikit)."
 )
@@ -38,7 +44,10 @@ RESEARCH_INSTRUCTION = (
 NEWS_INSTRUCTION = (
     "Hubungkan berita ke emiten dan aksi korporasi yang tepat.\n"
     "- Satu entri per peristiwa, bukan per artikel. Artikel yang menceritakan peristiwa sama digabung.\n"
-    "- `quote` wajib potongan kata demi kata dari judul atau isi artikel yang kamu rujuk, minimal 12 karakter.\n"
+    "- Hanya peristiwa tentang emiten ini. Abaikan emiten lain yang kebetulan disebut di artikel yang sama; "
+    "kalimatmu wajib menyebut ticker atau nama emiten.\n"
+    "- `quote` wajib potongan kata demi kata dari judul atau isi artikel yang kamu rujuk, minimal 12 karakter. "
+    "Hanya `quote` yang boleh berbahasa asli artikel; `statement` wajib kalimatmu sendiri dalam Bahasa Indonesia.\n"
     "- `attribution`: `document` bila mengutip dokumen resmi, `company_statement` bila pernyataan pihak "
     "perusahaan, `analyst` bila pendapat analis, `unattributed` bila tidak jelas sumbernya.\n"
     "- `event_date` format YYYY-MM-DD bila tertulis; kosongkan bila tidak disebut. Jangan menebak tanggal."
@@ -54,6 +63,12 @@ REVIEW_VERDICT_INSTRUCTION = (
     "- `supported`: bukti yang dirujuk memang mendukung isi klaim.\n"
     "- `unsupported`: bukti tidak cukup untuk menyimpulkan itu.\n"
     "- `contradicted`: bukti menunjukkan yang sebaliknya.\n"
+    "Periksa arah perbandingan dan apakah angka yang disebut milik metrik yang tepat; klaim yang membalik arah "
+    "atau menukar angka adalah `contradicted`.\n"
+    "\"Menurun/turun sebesar -X%\" bukan kontradiksi bila metrik pertumbuhannya memang -X%: tanda minus di "
+    "sana hanya gaya penulisan yang mengulang angka metrik, bukan klaim tentang kenaikan. Tandai `contradicted` "
+    "hanya bila ANGKA atau ARAH yang disebut klaim benar-benar berbeda dari metrik, bukan karena tanda minus "
+    "muncul berdampingan dengan kata \"menurun\".\n"
     "Beda periode atau beda dimensi bukan kontradiksi: fundamental membaik dan harga melemah bisa "
     "sama-sama benar. Nilai isi klaimnya, bukan gaya bahasanya."
 )
@@ -180,6 +195,24 @@ def claim_view(claim: dict) -> dict:
     if claim.get("quote"):
         view["kutipan"] = claim["quote"]
     return view
+
+
+def claim_batches(claims: list[dict], max_chars: int) -> list[list[dict]]:
+    """Pecah klaim jadi beberapa batch supaya tiap panggilan putusan pembanding tetap di bawah budget.
+
+    Satu batch yang tidak muat sama sekali (klaim tunggal lebih besar dari max_chars) tetap dipaksa
+    jalan sendirian, bukan didiamkan tanpa putusan -- run() model akan menolaknya dengan pesan jelas
+    kalau memang masih kebesaran, alih-alih loop tak berujung di sini.
+    """
+    batches: list[list[dict]] = []
+    remaining = list(claims)
+    while remaining:
+        kept, _dropped = fit(remaining, claim_view, max_chars)
+        if not kept:
+            kept = [claim_view(remaining[0])]
+        batches.append(kept)
+        remaining = remaining[len(kept):]
+    return batches
 
 
 def research_packet(company: dict, metrics: list[dict], limitations: list[str], budget: int) -> tuple[dict, int]:

@@ -19,7 +19,6 @@ Domain = Literal["fundamental", "valuation", "technical", "news"]
 PanelStatus = Literal["completed", "insufficient_data", "needs_review", "failed"]
 ClaimKind = Literal["observation", "calculation", "interpretation"]
 ValidationStatus = Literal["pending", "supported", "unsupported", "contradicted"]
-# Siapa yang menyatakan: fakta dokumen berbeda dari pernyataan manajemen, analis, atau rumor.
 Attribution = Literal["data", "document", "company_statement", "analyst", "unattributed"]
 Horizon = Literal["short", "medium", "long"]
 
@@ -50,7 +49,6 @@ class Source(Strict):
     params: dict = Field(default_factory=dict)
     ticker: str
     fetched_at: str
-    # Kapan informasi tersedia untuk publik, bila diketahui. None = tidak diketahui, bukan "selalu".
     available_at: str | None = None
     period: str | None = None
     sha256: str | None = None
@@ -58,7 +56,6 @@ class Source(Strict):
     status: Literal["ok", "empty", "error", "excluded"] = "ok"
     error: str | None = None
     credits: int = 0
-    # live: diambil untuk run ini; replay: dipakai ulang dari run lain, tanggal ambil aslinya dipertahankan.
     mode: Literal["live", "replay", "fixture"] = "live"
 
 
@@ -91,12 +88,11 @@ class Claim(Strict):
     assumptions: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     validation_status: ValidationStatus = "pending"
-    # Gabungan dua daftar di bawah; dipisah supaya pemeriksaan ulang kode tidak menghapus catatan pembanding.
     validation_notes: list[str] = Field(default_factory=list)
     mechanical_issues: list[str] = Field(default_factory=list)
     review_notes: list[str] = Field(default_factory=list)
     version: int = 1
-    # Dibuat oleh kode (template/metrik) atau model. Klaim kode tetap melewati pemeriksaan mekanis.
+    withdrawn: bool = False
     author: str = "code"
 
 
@@ -139,12 +135,10 @@ class GraphState(TypedDict, total=False):
     plan: dict
     run_dir: str
     sources: dict[str, dict]
-    # Kartu screening aksi korporasi terakhir (dibaca dari database), dipakai panel berita.
     screening: dict | None
     metrics: dict[str, dict]
     panels: dict[str, dict]
     events: list[dict]
-    # Aksi korporasi sampai tanggal acuan, dan kualitas/pemotongan seri harga.
     corporate_actions: list[dict]
     series: dict
     validation: dict

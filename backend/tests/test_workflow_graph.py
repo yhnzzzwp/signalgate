@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import threading
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,10 +43,26 @@ def research(statement="Pertumbuhan pendapatan kuartalan menguat dibanding perio
                            "metric_ids": ["valuation:pe_vs_peer_median"], "limitations": []}]}
 
 
-def news_events(quote="menggelar rights issue", statement="Perusahaan mengumumkan rencana rights issue."):
+def news_events(quote="menggelar rights issue", statement="PT Test Abadi Tbk (TEST) mengumumkan rencana rights issue."):
     return lambda text: {"events": [{"event_type": "rights_issue", "event_date": "2026-09-15",
                                      "statement": statement, "quote": quote, "attribution": "company_statement",
                                      "source_ids": [source_id(text)]}]}
+
+
+def many_news_events(count=6):
+    """`NewsOutput.events` mengizinkan sampai 6 -- dipakai untuk memaksa klaim berita dipecah beberapa batch.
+
+    `quote` harus potongan literal dari artikel fixture (lihat snapshot_responses) supaya klaim lolos
+    pemeriksaan kutipan mekanis dan benar-benar sampai ke review_node, bukan tertolak lebih awal.
+    """
+    def build(text):
+        sid = source_id(text)
+        return {"events": [{"event_type": "rights_issue", "event_date": "2026-09-15",
+                            "statement": "PT Test Abadi Tbk (TEST) mengumumkan rencana rights issue senilai "
+                                        "Rp500 miliar untuk menambah armada dan memperkuat modal kerja perseroan.",
+                            "quote": "menggelar rights issue senilai Rp500 miliar",
+                            "attribution": "company_statement", "source_ids": [sid]} for _ in range(count)]}
+    return build
 
 
 def source_id(text: str) -> str:
@@ -100,14 +116,14 @@ class FakePool:
         pass
 
 
-def pool(responses=None, errors=()):
+def pool(responses=None, errors=(), budget=40_000):
     defaults = {"ResearchOutput": research(), "NewsOutput": news_events(), "ReviewNotes": NOTES,
                 "ReviewVerdicts": verdicts_for(), "SynthesisOutput": SYNTHESIS}
     defaults.update(responses or {})
     created = {}
 
     def factory(settings):
-        created["pool"] = FakePool(settings, defaults, errors)
+        created["pool"] = FakePool(settings, defaults, errors, budget=budget)
         return created["pool"]
 
     factory.created = created
@@ -118,6 +134,9 @@ class WorkflowTestBase(unittest.TestCase):
     """Runner dengan DB, direktori snapshot, gateway fixture, dan model palsu; semuanya sementara."""
 
     def setUp(self):
+        clock = patch("app.workflow.nodes.today_wib", return_value=fx.AS_OF)
+        clock.start()
+        self.addCleanup(clock.stop)
         self.root = Path(tempfile.mkdtemp(prefix="signalgate-workflow-"))
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         self.settings = Settings(_env_file=None, llm_backend="off", sectors_api_enabled=False,
@@ -143,8 +162,6 @@ class WorkflowTestBase(unittest.TestCase):
 
 
 class WorkflowGraphTests(WorkflowTestBase):
-    # -- jalur utama ------------------------------------------------------------------------------
-
     def test_a_run_produces_four_panels_with_traceable_numbers(self):
         runner = self.runner()
         _run, result = self.run_once(runner)
@@ -156,7 +173,6 @@ class WorkflowGraphTests(WorkflowTestBase):
         for claim in (claim for panel in report["panels"].values() for claim in panel["claims"]):
             self.assertEqual(claim["validation_status"], "supported", claim)
             self.assertTrue(claim["metric_ids"] or claim["source_ids"], claim)
-        # Setiap metrik membawa formula, periode, dan sumber yang bisa dilacak.
         for metric in report["metrics"].values():
             self.assertTrue(metric["formula"] and metric["period"] is not None)
         self.assertEqual(report["credits_used"], 0, "mode fixture tidak memakai kredit")
@@ -171,9 +187,9 @@ class WorkflowGraphTests(WorkflowTestBase):
         by_kind = {}
         for source in report["sources"]:
             by_kind[source["kind"]] = by_kind.get(source["kind"], 0) + (source["credits"] or 0)
-        self.assertEqual(by_kind["sectors_company_report"], 4)   # satu kredit per seksi
-        self.assertEqual(by_kind["sectors_quarterly"], len(fx.quarterly()))  # satu kredit per kuartal
-        self.assertEqual(by_kind["sectors_daily"], 2)            # dua jendela 90 hari
+        self.assertEqual(by_kind["sectors_company_report"], 4)
+        self.assertEqual(by_kind["sectors_quarterly"], len(fx.quarterly()))
+        self.assertEqual(by_kind["sectors_daily"], 2)
         self.assertEqual(by_kind["sectors_corporate_actions"], 1)
         self.assertEqual(report["credits_used"], sum(by_kind.values()))
 
@@ -198,8 +214,6 @@ class WorkflowGraphTests(WorkflowTestBase):
         self.assertTrue(any("harga harian" in item.lower() for item in report["panels"]["technical"]["missing_data"]))
         self.assertEqual(report["status"], "partial")
         self.assertEqual(report["panels"]["fundamental"]["status"], "completed")
-
-    # -- gerbang bukti ----------------------------------------------------------------------------
 
     def test_an_invented_number_is_rejected_even_when_the_reviewer_approves_it(self):
         responses = {"ResearchOutput": research("Pendapatan kuartalan naik 47,5% dibanding tahun lalu.")}
@@ -229,6 +243,41 @@ class WorkflowGraphTests(WorkflowTestBase):
         self.assertEqual(claim["validation_status"], "unsupported")
         self.assertTrue(any("Kutipan tidak ditemukan" in note for note in claim["validation_notes"]))
 
+    def test_a_news_claim_about_another_issuer_in_the_same_article_is_rejected(self):
+        """Run live IDEA 19/09/2026: klaim tentang dividen TBIG ikut lolos dari artikel multi-emiten."""
+        runner = self.runner({"NewsOutput": news_events(
+            quote="menggelar rights issue",
+            statement="PT Tower Bersama Infrastructure Tbk memimpin pembagian dividen tunai sembilan emiten."),
+            "RepairOutput": {"claims": []}})
+        _run, result = self.run_once(runner)
+        report = runner.report(result["run_id"])
+        claim = next(claim for claim in report["panels"]["news"]["claims"] if claim["author"] != "code")
+        self.assertEqual(claim["validation_status"], "unsupported")
+        self.assertTrue(any("tidak menyebut emiten" in note for note in claim["validation_notes"]))
+
+    def test_a_reversed_comparison_is_rejected_even_when_the_reviewer_approves_it(self):
+        """Run live IDEA 19/09/2026: "2,05x lebih rendah dari 1,87x" lolos dan disetujui gemma3:4b."""
+        runner = self.runner({"ResearchOutput": {
+            "fundamental": [], "valuation": [{
+                "statement": "PB MRQ dihitung 1,50x lebih rendah dari PB MRQ Sectors 1,40x.",
+                "metric_ids": ["valuation:pb_mrq_calc", "valuation:pb_mrq_sectors"], "limitations": []}]},
+            "RepairOutput": {"claims": []}})
+        _run, result = self.run_once(runner)
+        report = runner.report(result["run_id"])
+        claim = next(claim for claim in report["panels"]["valuation"]["claims"] if claim["author"] != "code")
+        self.assertEqual(claim["validation_status"], "unsupported")
+        self.assertTrue(any("Arah perbandingan salah" in note for note in claim["validation_notes"]))
+
+    def test_a_correct_comparison_and_ids_written_in_the_text_pass(self):
+        runner = self.runner({"ResearchOutput": {
+            "fundamental": [], "valuation": [{
+                "statement": "PB MRQ dihitung 1,50x lebih tinggi dari PB MRQ Sectors 1,40x (valuation:pb_mrq_calc).",
+                "metric_ids": ["valuation:pb_mrq_calc", "valuation:pb_mrq_sectors"], "limitations": []}]}})
+        _run, result = self.run_once(runner)
+        report = runner.report(result["run_id"])
+        claim = next(claim for claim in report["panels"]["valuation"]["claims"] if claim["author"] != "code")
+        self.assertEqual(claim["validation_status"], "supported", claim["validation_notes"])
+
     def test_transaction_language_never_reaches_the_report(self):
         runner = self.runner({"ResearchOutput": research("Metrik pertumbuhan ini membuat sahamnya layak dibeli."),
                               "RepairOutput": {"claims": []}})
@@ -248,8 +297,6 @@ class WorkflowGraphTests(WorkflowTestBase):
         self.assertEqual(len(report["synthesis"]["dropped"]), 1)
         self.assertEqual(report["synthesis"]["author"], "code")
         self.assertEqual(report["status"], "needs_review")
-
-    # -- perbaikan terarah ------------------------------------------------------------------------
 
     def test_one_repair_round_can_fix_a_claim_and_the_loop_stops_there(self):
         repaired = {"claims": [{"claim_id": "fundamental:model:1",
@@ -273,7 +320,10 @@ class WorkflowGraphTests(WorkflowTestBase):
         report = runner.report(result["run_id"])
         claim = next(claim for claim in report["panels"]["fundamental"]["claims"] if claim["author"] != "code")
         self.assertEqual(claim["validation_status"], "unsupported")
+        self.assertTrue(claim["withdrawn"])
         self.assertTrue(any("menarik klaim" in note for note in claim["validation_notes"]))
+        self.assertEqual(report["panels"]["fundamental"]["status"], "completed")
+        self.assertNotIn(claim["claim_id"], report["validation"]["unresolved_claim_ids"])
 
     def test_a_reviewer_that_contradicts_a_claim_keeps_it_out_of_the_summary(self):
         runner = self.runner({"ReviewVerdicts": verdicts_for("contradicted"), "RepairOutput": {"claims": []}})
@@ -287,7 +337,20 @@ class WorkflowGraphTests(WorkflowTestBase):
         for claim in model_claims:
             self.assertNotIn(claim["claim_id"], summary)
 
-    # -- tanggal acuan historis --------------------------------------------------------------------
+    def test_review_splits_many_claims_into_batches_instead_of_one_oversized_call(self):
+        """Regresi bug: `verdict_packet` dulu menumpuk semua klaim di satu panggilan tanpa dihitung ke
+        budget, jadi bisa melebihi batas konteks model dan seluruh klaim berita nyangkut `pending`.
+        """
+        runner = self.runner(model_factory=pool({"NewsOutput": many_news_events(6)}, budget=3_200))
+        _run, result = self.run_once(runner)
+        report = runner.report(result["run_id"])
+        news_claims = [claim for claim in report["panels"]["news"]["claims"] if claim["author"] != "code"]
+        self.assertEqual(len(news_claims), 6)
+        self.assertTrue(all(claim["validation_status"] == "supported" for claim in news_claims),
+                        [claim["validation_status"] for claim in news_claims])
+        verdict_calls = sum(1 for role, schema in runner.model_factory.created["pool"].calls
+                            if role == "reviewer" and schema == "ReviewVerdicts")
+        self.assertGreater(verdict_calls, 1, "klaim sebanyak ini seharusnya tidak muat di satu panggilan")
 
     def test_a_historical_as_of_refuses_the_live_company_report(self):
         runner = self.runner()
@@ -299,8 +362,6 @@ class WorkflowGraphTests(WorkflowTestBase):
         self.assertEqual(report["panels"]["valuation"]["status"], "insufficient_data")
         self.assertTrue(any("snapshot terkini" in item for item in report["panels"]["valuation"]["missing_data"]))
         self.assertTrue(any("batas lapor" in item for item in report["panels"]["fundamental"]["limitations"]))
-
-    # -- replay, resume, cancel --------------------------------------------------------------------
 
     def test_replay_reuses_the_stored_snapshot_without_spending_credits(self):
         runner = self.runner()
@@ -384,7 +445,7 @@ if __name__ == "__main__":
 class WorkflowStateChannelTests(WorkflowTestBase):
     """Kunci state yang tidak terdaftar di GraphState akan hilang diam-diam; ini yang menjaganya."""
 
-    def seed_screening(self):
+    def seed_screening(self, created_at=datetime(2026, 9, 17, 3, 0)):
         from app.pipeline.audit import persist_screened_event
         from app.pipeline.presentation import screen_outcome
         from app.pipeline.schema import ActionBucket, CandidateEvent, Verdict, VerdictLabel
@@ -397,7 +458,9 @@ class WorkflowStateChannelTests(WorkflowTestBase):
                                   verdict=Verdict(label=VerdictLabel.structural_red_flag, confidence=0.7,
                                                   provider="ollama:test", rationale_bullets=["Inbreng pengendali."]))
         with self.session_factory() as session:
-            persist_screened_event(session, screen_outcome(event, None, outcome), dedupe_key="scan:screen")
+            record = persist_screened_event(session, screen_outcome(event, None, outcome), dedupe_key="scan:screen")
+            record.created_at = created_at
+            session.commit()
 
     def test_corporate_actions_and_the_screening_label_reach_the_news_panel(self):
         self.seed_screening()
@@ -411,9 +474,17 @@ class WorkflowStateChannelTests(WorkflowTestBase):
         self.assertTrue(any("Rights issue" in item for item in statements), statements)
         self.assertTrue(any("red flag struktural" in item for item in statements), statements)
         self.assertTrue(any(source["kind"] == "signalgate_screening" for source in report["sources"]))
-        # Aksi korporasi memotong seri harga, jadi kualitas seri harus ikut tersimpan di laporan.
         self.assertEqual(report["series"]["breaks_in_window"][0]["type"], "stock_split")
         self.assertGreater(report["series"]["quality"]["sessions"], 0)
+
+    def test_a_screening_card_created_after_the_as_of_date_is_not_used(self):
+        self.seed_screening(created_at=datetime(2026, 9, 19, 3, 0))
+        runner = self.runner()
+        _run, result = self.run_once(runner)
+        report = runner.report(result["run_id"])
+        self.assertFalse(any("Screening aksi korporasi" in claim["statement"]
+                             for claim in report["panels"]["news"]["claims"]))
+        self.assertFalse(any(source["kind"] == "signalgate_screening" for source in report["sources"]))
 
     def test_an_action_after_the_as_of_date_is_not_reported_as_history(self):
         actions = fx.corporate_actions(("stock_split", {"date": "2026-12-01", "split_ratio": 4}))
@@ -421,3 +492,28 @@ class WorkflowStateChannelTests(WorkflowTestBase):
         _run, result = self.run_once(runner)
         report = runner.report(result["run_id"])
         self.assertFalse(any("Stock split" in claim["statement"] for claim in report["panels"]["news"]["claims"]))
+
+
+class NameVariantsTests(unittest.TestCase):
+    """qwen2.5:14b (replay TLKM 2026-09-19) menulis "PT Telkom Indonesia Tbk" tanpa "(Persero)" saat
+    memparafrase nama emiten di panel news; `identity_issue` menolak semua klaimnya karena tidak ada
+    variasi nama yang cocok. `_name_variants` harus menyertakan bentuk tanpa anotasi kurung itu."""
+
+    def test_bumn_name_without_persero_annotation_is_included(self):
+        variants = nodes._name_variants("PT Telkom Indonesia (Persero) Tbk")
+        self.assertIn("PT Telkom Indonesia Tbk", variants)
+        self.assertIn("Telkom Indonesia", variants)
+
+    def test_plain_name_without_parenthetical_is_unaffected(self):
+        variants = nodes._name_variants("PT Bukit Asam Tbk")
+        self.assertIn("Bukit Asam", variants)
+
+    def test_empty_name_yields_no_variants(self):
+        self.assertEqual(nodes._name_variants(""), [])
+
+    def test_identity_issue_accepts_the_paraphrased_persero_name(self):
+        from app.workflow.evidence import identity_issue
+        identity = ["TLKM", *nodes._name_variants("PT Telkom Indonesia (Persero) Tbk")]
+        claim = {"domain": "news", "author": "model:ollama:qwen2.5:14b",
+                 "statement": "PT Telkom Indonesia Tbk membuka opsi melepas saham anak usaha."}
+        self.assertIsNone(identity_issue(claim, identity))

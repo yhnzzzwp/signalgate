@@ -10,7 +10,8 @@ from app.workflow.evidence import display
 CALCULATION_METRICS = {
     "fundamental": ("revenue_growth_yoy", "earnings_growth_yoy", "net_margin_latest", "revenue_ttm", "earnings_ttm",
                     "operating_cash_flow_ttm", "cash_conversion_ttm", "liabilities_to_equity", "debt_to_equity",
-                    "net_interest_income_growth_yoy", "loan_to_deposit", "revenue_growth_fy"),
+                    "net_interest_income_growth_yoy", "loan_to_deposit", "revenue_growth_fy", "earnings_growth_fy",
+                    "net_margin_fy"),
     "valuation": ("pe_ttm_calc", "pe_ttm_sectors", "pb_mrq_calc", "pb_mrq_sectors", "peer_pe_median",
                   "pe_vs_peer_median", "peer_pb_median", "pb_vs_peer_median", "pe_history_median"),
 }

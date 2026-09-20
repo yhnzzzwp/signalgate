@@ -1,0 +1,326 @@
+{
+  "runs": [
+    "BBRI-2026-09-19-2526c991",
+    "HATM-2026-09-19-530505c7",
+    "IDEA-2026-09-19-c9fc6f4e",
+    "INDR-2026-09-19-87d29dc8",
+    "MKNT-2026-09-19-2923a3d7",
+    "PTBA-2026-09-19-66d805db",
+    "TLKM-2026-09-19-07c2f6d3"
+  ],
+  "ringkasan": {
+    "qwen2.5:7b -> gemma3:4b | semua": {
+      "klaim": 57,
+      "belum_dilabel": 0,
+      "tak_bisa_dinilai": 5,
+      "tertunda": 2,
+      "tampil": 32,
+      "tampil_putusan": {
+        "benar": 28,
+        "salah_fakta": 3,
+        "berlebihan": 1
+      },
+      "presisi_ketat": 0.875,
+      "presisi_ketat_ci95": [
+        0.719,
+        0.95
+      ],
+      "presisi_longgar": 0.906,
+      "presisi_longgar_ci95": [
+        0.758,
+        0.968
+      ],
+      "ditolak": 18,
+      "ditolak_padahal_benar": 9,
+      "ditolak_oleh": {
+        "analis_menarik": 9,
+        "kode": 9
+      },
+      "klaim_salah": 12,
+      "klaim_salah_tertangkap": 8,
+      "tingkat_tangkap": 0.667
+    },
+    "qwen2.5:7b -> gemma3:4b | panel=fundamental": {
+      "klaim": 28,
+      "belum_dilabel": 0,
+      "tak_bisa_dinilai": 2,
+      "tertunda": 0,
+      "tampil": 16,
+      "tampil_putusan": {
+        "benar": 16
+      },
+      "presisi_ketat": 1.0,
+      "presisi_ketat_ci95": [
+        0.806,
+        1.0
+      ],
+      "presisi_longgar": 1.0,
+      "presisi_longgar_ci95": [
+        0.806,
+        1.0
+      ],
+      "ditolak": 10,
+      "ditolak_padahal_benar": 9,
+      "ditolak_oleh": {
+        "analis_menarik": 8,
+        "kode": 2
+      },
+      "klaim_salah": 0,
+      "klaim_salah_tertangkap": 0,
+      "tingkat_tangkap": null
+    },
+    "qwen2.5:7b -> gemma3:4b | panel=news": {
+      "klaim": 8,
+      "belum_dilabel": 0,
+      "tak_bisa_dinilai": 0,
+      "tertunda": 2,
+      "tampil": 1,
+      "tampil_putusan": {
+        "benar": 1
+      },
+      "presisi_ketat": 1.0,
+      "presisi_ketat_ci95": [
+        0.207,
+        1.0
+      ],
+      "presisi_longgar": 1.0,
+      "presisi_longgar_ci95": [
+        0.207,
+        1.0
+      ],
+      "ditolak": 5,
+      "ditolak_padahal_benar": 0,
+      "ditolak_oleh": {
+        "kode": 5
+      },
+      "klaim_salah": 6,
+      "klaim_salah_tertangkap": 5,
+      "tingkat_tangkap": 0.833
+    },
+    "qwen2.5:7b -> gemma3:4b | panel=valuation": {
+      "klaim": 21,
+      "belum_dilabel": 0,
+      "tak_bisa_dinilai": 3,
+      "tertunda": 0,
+      "tampil": 15,
+      "tampil_putusan": {
+        "salah_fakta": 3,
+        "benar": 11,
+        "berlebihan": 1
+      },
+      "presisi_ketat": 0.733,
+      "presisi_ketat_ci95": [
+        0.48,
+        0.891
+      ],
+      "presisi_longgar": 0.8,
+      "presisi_longgar_ci95": [
+        0.548,
+        0.93
+      ],
+      "ditolak": 3,
+      "ditolak_padahal_benar": 0,
+      "ditolak_oleh": {
+        "analis_menarik": 1,
+        "kode": 2
+      },
+      "klaim_salah": 6,
+      "klaim_salah_tertangkap": 3,
+      "tingkat_tangkap": 0.5
+    },
+    "qwen2.5:7b -> gemma3:4b | split=dev": {
+      "klaim": 57,
+      "belum_dilabel": 0,
+      "tak_bisa_dinilai": 5,
+      "tertunda": 2,
+      "tampil": 32,
+      "tampil_putusan": {
+        "benar": 28,
+        "salah_fakta": 3,
+        "berlebihan": 1
+      },
+      "presisi_ketat": 0.875,
+      "presisi_ketat_ci95": [
+        0.719,
+        0.95
+      ],
+      "presisi_longgar": 0.906,
+      "presisi_longgar_ci95": [
+        0.758,
+        0.968
+      ],
+      "ditolak": 18,
+      "ditolak_padahal_benar": 9,
+      "ditolak_oleh": {
+        "analis_menarik": 9,
+        "kode": 9
+      },
+      "klaim_salah": 12,
+      "klaim_salah_tertangkap": 8,
+      "tingkat_tangkap": 0.667
+    }
+  },
+  "lolos_padahal_bermasalah": [
+    {
+      "run_id": "BBRI-2026-09-19-2526c991",
+      "panel": "valuation",
+      "putusan": "salah_fakta",
+      "oleh": null,
+      "pernyataan": "PE TTM emiten sebesar 7,97x, lebih rendah dibanding rata-rata sektor 8,02x, menunjukkan penilaian pasar lebih rendah dibanding rata-rata sektor.",
+      "catatan": "Angka beda dengan broker per 19 Sep 2026: PE 8,13 / PE TTM 8,19 (sistem 7,97 dan 8,02); PB MRQ 1,56.",
+      "catatan_sistem": [
+        "Pembanding: Pernyataan ini didukung oleh data `valuation:pe_ttm_calc` dan `valuation:pe_ttm_sectors`."
+      ]
+    },
+    {
+      "run_id": "HATM-2026-09-19-530505c7",
+      "panel": "valuation",
+      "putusan": "salah_fakta",
+      "oleh": null,
+      "pernyataan": "Kapitalisasi pasar emiten sebesar Rp5,17 triliun, dengan PE TTM sebesar 133,12x, lebih tinggi dari median PE TTM peer sebesar 21,70x, menunjukkan penilaian pasar yang lebih tinggi dibandingkan dengan rata-rata peer.",
+      "catatan": "market cap di 4.817 milyar dengan PE TTM 123,98",
+      "catatan_sistem": [
+        "Pembanding: Kapitalisasi pasar sebesar Rp5,17 triliun dan median PE TTM peer sebesar 21,70x sesuai dengan data yang diberikan."
+      ]
+    },
+    {
+      "run_id": "MKNT-2026-09-19-2923a3d7",
+      "panel": "valuation",
+      "putusan": "berlebihan",
+      "oleh": null,
+      "pernyataan": "Kapitalisasi pasar emiten pada 2026-09-18 adalah Rp5,5 miliar.",
+      "catatan": "dalam broker tertulis 6Miliar per 19 Septermebr ( bisa jadi oembulana oleh broker )",
+      "catatan_sistem": [
+        "Pembanding: Kapitalisasi pasar emiten pada 2026-09-18 adalah Rp5,5 miliar (`valuation:market_cap`)."
+      ]
+    },
+    {
+      "run_id": "TLKM-2026-09-19-07c2f6d3",
+      "panel": "valuation",
+      "putusan": "salah_fakta",
+      "oleh": null,
+      "pernyataan": "PB MRQ emiten sebesar 1,88x, lebih rendah dari median PB peer sebesar 2,08x, menunjukkan penilaian pasar yang lebih rendah dibanding rata-rata peer.",
+      "catatan": "Bug PB: dibagi total ekuitas termasuk minoritas. PB atas ekuitas induk ±2,14x (Sectors 2,17x), di atas median peer 2,08x; arah terbalik.",
+      "catatan_sistem": [
+        "Pembanding tidak memberi putusan untuk klaim ini.",
+        "Pembanding: PB MRQ emiten sebesar 1,88x memang lebih rendah dari median PB peer sebesar 2,08x."
+      ]
+    }
+  ],
+  "ditolak_padahal_benar": [
+    {
+      "run_id": "BBRI-2026-09-19-2526c991",
+      "panel": "fundamental",
+      "putusan": "benar",
+      "oleh": "analis_menarik",
+      "pernyataan": "Pertumbuhan pendapatan tahunan emiten menurun sebesar -9,2% dari FY2024 ke FY2025, menunjukkan penurunan pertumbuhan pendapatan tahunan.",
+      "catatan": "",
+      "catatan_sistem": [
+        "Pembanding: Pernyataan ini bertentangan dengan data yang diberikan. `fundamental:revenue_growth_fy` menunjukkan penurunan sebesar -9,2%, bukan peningkatan.",
+        "Analis menarik klaim ini setelah pemeriksaan."
+      ]
+    },
+    {
+      "run_id": "BBRI-2026-09-19-2526c991",
+      "panel": "fundamental",
+      "putusan": "benar",
+      "oleh": "analis_menarik",
+      "pernyataan": "Pertumbuhan laba bersih tahunan emiten menurun sebesar -5,8% dari FY2024 ke FY2025, menunjukkan penurunan pertumbuhan laba bersih tahunan.",
+      "catatan": "",
+      "catatan_sistem": [
+        "Pembanding: Pernyataan ini bertentangan dengan data yang diberikan. `fundamental:earnings_growth_fy` menunjukkan penurunan sebesar -5,8%, bukan peningkatan.",
+        "Analis menarik klaim ini setelah pemeriksaan."
+      ]
+    },
+    {
+      "run_id": "HATM-2026-09-19-530505c7",
+      "panel": "fundamental",
+      "putusan": "benar",
+      "oleh": "analis_menarik",
+      "pernyataan": "Pertumbuhan pendapatan tahunan emiten meningkat sebesar 29,0% dari FY2024 ke FY2025, menunjukkan peningkatan kekuatan pasar atau efisiensi operasional.",
+      "catatan": "",
+      "catatan_sistem": [
+        "Pembanding: Pertumbuhan pendapatan YoY sebesar +6,2% dari FY2024 ke FY2025, bukan 29,0% seperti yang dinyatakan dalam klaim.",
+        "Analis menarik klaim ini setelah pemeriksaan."
+      ]
+    },
+    {
+      "run_id": "HATM-2026-09-19-530505c7",
+      "panel": "fundamental",
+      "putusan": "benar",
+      "oleh": "analis_menarik",
+      "pernyataan": "Pertumbuhan laba bersih tahunan mengalami penurunan sebesar 31,4% dari FY2024 ke FY2025, yang mungkin disebabkan oleh peningkatan biaya operasional atau penurunan margin.",
+      "catatan": "",
+      "catatan_sistem": [
+        "Pembanding: Pertumbuhan laba bersih YoY sebesar -26,2% dari FY2024 ke FY2025, bukan -31,4% seperti yang dinyatakan dalam klaim.",
+        "Analis menarik klaim ini setelah pemeriksaan."
+      ]
+    },
+    {
+      "run_id": "INDR-2026-09-19-87d29dc8",
+      "panel": "fundamental",
+      "putusan": "benar",
+      "oleh": "analis_menarik",
+      "pernyataan": "Pertumbuhan pendapatan tahunan emiten menurun sebesar -5,8% dari FY2024 ke FY2025, menunjukkan penurunan dalam pertumbuhan pendapatan tahunan.",
+      "catatan": "",
+      "catatan_sistem": [
+        "Pembanding: Pernyataan ini bertentangan dengan data yang diberikan. Pertumbuhan pendapatan YoY adalah +38,4%, bukan penurunan sebesar -5,8%.",
+        "Analis menarik klaim ini setelah pemeriksaan."
+      ]
+    },
+    {
+      "run_id": "PTBA-2026-09-19-66d805db",
+      "panel": "fundamental",
+      "putusan": "benar",
+      "oleh": "analis_menarik",
+      "pernyataan": "Pertumbuhan pendapatan tahunan emiten menurun sebesar -0,3% dari FY2024 ke FY2025, menunjukkan penurunan pertumbuhan pendapatan tahunan.",
+      "catatan": "",
+      "catatan_sistem": [
+        "Pembanding: Pernyataan tersebut menyatakan penurunan pertumbuhan pendapatan tahunan sebesar -0,3%, padahal data menunjukkan pertumbuhan pendapatan tahunan sebesar -0,3% (metric_ids: fundamental:revenue_growth_fy).",
+        "Analis menarik klaim ini setelah pemeriksaan."
+      ]
+    },
+    {
+      "run_id": "TLKM-2026-09-19-07c2f6d3",
+      "panel": "fundamental",
+      "putusan": "benar",
+      "oleh": "analis_menarik",
+      "pernyataan": "Pertumbuhan pendapatan tahunan emiten menurun sebesar -2,2% pada FY2025 dibanding FY2024, menunjukkan penurunan pertumbuhan pendapatan tahunan.",
+      "catatan": "",
+      "catatan_sistem": [
+        "Pembanding: Pernyataan tersebut menyatakan penurunan pertumbuhan pendapatan tahunan sebesar -2,2%, sedangkan data menunjukkan pertumbuhan pendapatan tahunan sebesar -2,2% (metric_ids: ['fundamental:revenue_growth_fy'], source_ids: ['fundamental:revenue_growth_fy']).",
+        "Analis menarik klaim ini setelah pemeriksaan."
+      ]
+    },
+    {
+      "run_id": "TLKM-2026-09-19-07c2f6d3",
+      "panel": "fundamental",
+      "putusan": "benar",
+      "oleh": "analis_menarik",
+      "pernyataan": "Pertumbuhan laba bersih tahunan emiten menurun sebesar -24,7% pada FY2025 dibanding FY2024, menunjukkan penurunan pertumbuhan laba bersih tahunan.",
+      "catatan": "",
+      "catatan_sistem": [
+        "Pembanding: Pernyataan tersebut menyatakan penurunan pertumbuhan laba bersih tahunan sebesar -24,7%, sedangkan data menunjukkan pertumbuhan laba bersih tahunan sebesar -24,7% (metric_ids: ['fundamental:earnings_growth_fy'], source_ids: ['fundamental:earnings_growth_fy']).",
+        "Analis menarik klaim ini setelah pemeriksaan."
+      ]
+    },
+    {
+      "run_id": "TLKM-2026-09-19-07c2f6d3",
+      "panel": "fundamental",
+      "putusan": "benar",
+      "oleh": "kode",
+      "pernyataan": "Margin laba bersih emiten meningkat sebesar 2,0% dari Q2 2025 menjadi Q2 2026, mencapai 16,2%, menunjukkan peningkatan profitabilitas.",
+      "catatan": "",
+      "catatan_sistem": [
+        "Angka tanpa dasar metrik/sumber: 2,0.",
+        "Analis menarik klaim ini setelah pemeriksaan."
+      ]
+    }
+  ],
+  "label": {
+    "tidak_valid": [],
+    "konflik": [],
+    "kesepakatan": null
+  },
+  "catatan": "Presisi ketat: hanya 'benar'. Longgar: 'benar' + 'berlebihan'. Satu klaim dihitung sekali per run; run replay dengan konfigurasi sama tidak ikut dihitung kecuali disebut lewat --run."
+}

@@ -10,14 +10,10 @@ import math
 from datetime import date, timedelta
 from statistics import median
 
-CALC_VERSION = "calc-2026-09-18.1"
+CALC_VERSION = "calc-2026-09-19.1"
 
-# Minimum observasi per indikator. Warm-up EMA/Wilder membuat nilai awal belum stabil, jadi batasnya
-# sengaja di atas panjang jendela nominal.
 MIN_OBS = {"return_20": 21, "return_60": 61, "sma20": 20, "sma50": 50, "rsi14": 30, "atr14": 30,
            "macd": 60, "volume_ratio_20": 21, "volatility_20": 21}
-# Lompatan harga harian sebesar ini hampir mustahil dari perdagangan biasa di IDX (batas ARA/ARB), jadi
-# dianggap tanda seri belum disesuaikan untuk aksi korporasi yang tidak tercatat.
 SUSPECT_JUMP = 0.5
 STALE_DAYS = 7
 PEER_MINIMUM = 3
@@ -49,10 +45,6 @@ def _day(value) -> date | None:
 def quarter_label(day: date) -> str:
     return f"Q{(day.month - 1) // 3 + 1} {day.year}"
 
-
-# ---------------------------------------------------------------------------------------------------
-# Fundamental
-# ---------------------------------------------------------------------------------------------------
 
 def quarterly_series(rows) -> tuple[list[dict], list[str]]:
     """Kuartal terurut dari terbaru, satu baris per tanggal. Duplikat yang berbeda isi dicatat."""
@@ -116,6 +108,14 @@ def fundamental_metrics(report: dict | None, quarterly: list[dict] | None, repor
         latest = series[0]
         prior = _same_quarter_last_year(series, latest)
         label = quarter_label(latest["_day"])
+        gaps = {_months_apart(a["_day"], b["_day"]) for a, b in zip(series, series[1:])}
+        if gaps == {6}:
+            limitations.append("Data periodik Sectors untuk emiten ini semesteran (Juni/Desember), bukan kuartalan; "
+                               "nilai TTM empat kuartal tidak dapat dibentuk.")
+        empty = [field for field in ("revenue", "earnings", "operating_cash_flow")
+                 if all(row.get(field) is None for row in series)]
+        if empty:
+            missing.append(f"Sectors tidak mengisi {', '.join(empty)} pada {len(series)} laporan periodik yang diambil.")
         if prior is None:
             missing.append(f"Kuartal yang sama tahun sebelumnya untuk {label} tidak tersedia; pertumbuhan YoY tidak dihitung.")
         compare = f"{label} vs {quarter_label(prior['_day'])}" if prior else label
@@ -123,6 +123,8 @@ def fundamental_metrics(report: dict | None, quarterly: list[dict] | None, repor
             current = _number(latest.get(field))
             previous = _number(prior.get(field)) if prior else None
             value, status, note = _growth(current, previous)
+            if current is None and note is None:
+                note = f"Sectors tidak mengisi {field} untuk {label}."
             metrics.append(_metric(f"fundamental:{field}_growth_yoy", "fundamental", name, value, "ratio",
                                    f"{field}[{label}] / {field}[kuartal sama tahun lalu] - 1", compare, q_src,
                                    status=status, note=note))
@@ -160,6 +162,12 @@ def fundamental_metrics(report: dict | None, quarterly: list[dict] | None, repor
         equity = _number(latest.get("total_equity"))
         metrics.append(_metric("fundamental:total_equity_latest", "fundamental", f"Total ekuitas {label}", equity, "IDR",
                                "total_equity kuartal terakhir", label, q_src))
+        parent_equity = _number(latest.get("stockholders_equity"))
+        if parent_equity is None:
+            parent_equity = equity
+        metrics.append(_metric("fundamental:parent_equity_latest", "fundamental",
+                               f"Ekuitas milik pemilik induk {label}", parent_equity, "IDR",
+                               "stockholders_equity kuartal terakhir (fallback total_equity)", label, q_src))
         if not financial:
             for field, name, metric_id in (("total_liabilities", "Liabilitas terhadap ekuitas", "liabilities_to_equity"),
                                            ("total_debt", "Utang berbunga terhadap ekuitas", "debt_to_equity")):
@@ -196,20 +204,23 @@ def fundamental_metrics(report: dict | None, quarterly: list[dict] | None, repor
     r_src = [report_source] if report_source else []
     if len(years) >= 2:
         last, before = years[-1], years[-2]
-        value, status, note = _growth(_number(last.get("revenue")), _number(before.get("revenue")))
-        metrics.append(_metric("fundamental:revenue_growth_fy", "fundamental", "Pertumbuhan pendapatan tahunan", value,
-                               "ratio", "revenue[FY terakhir] / revenue[FY sebelumnya] - 1",
-                               f"FY{last['year']} vs FY{before['year']}", r_src, status=status, note=note))
+        span = f"FY{last['year']} vs FY{before['year']}"
+        for field, name in (("revenue", "Pertumbuhan pendapatan tahunan"), ("earnings", "Pertumbuhan laba bersih tahunan")):
+            value, status, note = _growth(_number(last.get(field)), _number(before.get(field)))
+            metrics.append(_metric(f"fundamental:{field}_growth_fy", "fundamental", name, value, "ratio",
+                                   f"{field}[FY terakhir] / {field}[FY sebelumnya] - 1", span, r_src,
+                                   status=status, note=note))
+        if not financial:
+            revenue, earnings = _number(last.get("revenue")), _number(last.get("earnings"))
+            metrics.append(_metric("fundamental:net_margin_fy", "fundamental", f"Margin laba bersih FY{last['year']}",
+                                   earnings / revenue if revenue and revenue > 0 and earnings is not None else None,
+                                   "ratio", "earnings / revenue (tahun buku penuh)", f"FY{last['year']}", r_src))
     elif report is not None:
         missing.append("Laporan tahunan historis di company report kurang dari dua tahun.")
     if series:
         limitations.append("Sectors tidak menyertakan tanggal publikasi laporan kuartalan; ketersediaan historis tidak dapat dipastikan.")
     return metrics, missing, limitations
 
-
-# ---------------------------------------------------------------------------------------------------
-# Valuation
-# ---------------------------------------------------------------------------------------------------
 
 def _peer_rows(report):
     peers = (report or {}).get("peers") or []
@@ -235,7 +246,7 @@ def valuation_metrics(report: dict | None, fundamental: list[dict], report_sourc
 
     by_id = {m["metric_id"]: m for m in fundamental}
     earnings_ttm = by_id.get("fundamental:earnings_ttm", {}).get("value")
-    equity_metric = by_id.get("fundamental:total_equity_latest") or {}
+    equity_metric = by_id.get("fundamental:parent_equity_latest") or by_id.get("fundamental:total_equity_latest") or {}
     equity = equity_metric.get("value")
     self_row = next((row for row in _peer_rows(report) if "self" in (row.get("group") or [])), None)
     calc_sources = r_src + ([quarterly_source] if quarterly_source else [])
@@ -272,14 +283,24 @@ def valuation_metrics(report: dict | None, fundamental: list[dict], report_sourc
     if market_cap is not None and equity is not None:
         if equity > 0:
             metrics.append(_metric("valuation:pb_mrq_calc", "valuation", "PB MRQ (dihitung)", market_cap / equity, "x",
-                                   "market_cap / total_equity kuartal terakhir", equity_metric.get("period", "MRQ"),
-                                   calc_sources, price_basis=basis,
-                                   inputs=("valuation:market_cap", "fundamental:total_equity_latest")))
+                                   "market_cap / ekuitas milik pemilik induk kuartal terakhir",
+                                   equity_metric.get("period", "MRQ"), calc_sources, price_basis=basis,
+                                   inputs=("valuation:market_cap", equity_metric.get("metric_id",
+                                                                                     "fundamental:parent_equity_latest"))))
         else:
             metrics.append(_metric("valuation:pb_mrq_calc", "valuation", "PB MRQ (dihitung)", None, "x",
-                                   "market_cap / total_equity kuartal terakhir", equity_metric.get("period", "MRQ"),
-                                   calc_sources, status="not_meaningful", note="Ekuitas nol atau negatif.",
-                                   price_basis=basis))
+                                   "market_cap / ekuitas milik pemilik induk kuartal terakhir",
+                                   equity_metric.get("period", "MRQ"), calc_sources, status="not_meaningful",
+                                   note="Ekuitas nol atau negatif.", price_basis=basis))
+
+    pb_calc = next((m for m in metrics if m["metric_id"] == "valuation:pb_mrq_calc"), None)
+    pb_sectors = next((m for m in metrics if m["metric_id"] == "valuation:pb_mrq_sectors"), None)
+    if pb_calc and pb_sectors and pb_calc["value"] and pb_sectors["value"]:
+        gap = pb_calc["value"] / pb_sectors["value"] - 1
+        if abs(gap) > VALUATION_MISMATCH:
+            conflicts.append(f"PB MRQ hitungan sendiri berbeda {gap:+.0%} dari PB MRQ Sectors; basis jumlah saham "
+                             "atau ekuitas kemungkinan berbeda (mis. aksi korporasi terbaru belum tercermin "
+                             "di salah satu sumber), keduanya ditampilkan.")
 
     own_pe = (pe_calc or {}).get("value") or (pe_sectors or {}).get("value")
     own_pe_id = (pe_calc if (pe_calc or {}).get("value") else pe_sectors or {}).get("metric_id")
@@ -338,15 +359,11 @@ def valuation_metrics(report: dict | None, fundamental: list[dict], report_sourc
     return metrics, missing, limitations, conflicts
 
 
-# ---------------------------------------------------------------------------------------------------
-# Technical
-# ---------------------------------------------------------------------------------------------------
-
 def clean_daily(rows, as_of: date) -> tuple[list[dict], dict]:
     """Seri harian bersih dan laporan kualitasnya. Tidak ada nilai yang diisi diam-diam."""
     quality = {"received": 0, "duplicates": 0, "conflicting_duplicates": 0, "invalid": 0, "after_as_of": 0,
-               "zero_volume_days": 0, "sessions": 0, "first_date": None, "last_date": None, "stale": False,
-               "stale_days": None}
+               "zero_volume_days": 0, "open_missing": 0, "sessions": 0, "first_date": None, "last_date": None,
+               "stale": False, "stale_days": None}
     by_date: dict[date, dict] = {}
     for row in rows or []:
         quality["received"] += 1
@@ -359,9 +376,14 @@ def clean_daily(rows, as_of: date) -> tuple[list[dict], dict]:
             continue
         values = {key: _number(row.get(key)) for key in ("open", "high", "low", "close", "volume")}
         o, h, l, c, v = (values[k] for k in ("open", "high", "low", "close", "volume"))
-        if None in (o, h, l, c, v) or min(o, h, l, c) <= 0 or v < 0 or h < l or h < max(o, c) or l > min(o, c):
+        if o is not None and o <= 0:
+            o = None
+        if None in (h, l, c, v) or min(h, l, c) <= 0 or v < 0 or h < l or not l <= c <= h \
+                or (o is not None and not l <= o <= h):
             quality["invalid"] += 1
             continue
+        if o is None:
+            quality["open_missing"] += 1
         bar = {"date": day, "open": o, "high": h, "low": l, "close": c, "volume": v,
                "market_cap": _number(row.get("market_cap"))}
         if day in by_date:
@@ -491,6 +513,9 @@ def technical_metrics(bars: list[dict], quality: dict, breaks: list[dict], daily
         limitations.append(f"{quality['invalid']} baris harga tidak valid dibuang.")
     if quality.get("zero_volume_days"):
         limitations.append(f"{quality['zero_volume_days']} sesi bervolume nol tetap dihitung apa adanya.")
+    if quality.get("open_missing"):
+        limitations.append(f"{quality['open_missing']} sesi tanpa harga pembukaan dari Sectors tetap dipakai; "
+                           "indikator hanya memakai harga penutupan, tertinggi, dan terendah.")
 
     closes = [bar["close"] for bar in segment]
     last = segment[-1]

@@ -151,6 +151,7 @@ export interface WorkflowClaim {
   validation_notes: string[];
   version: number;
   author: string;
+  withdrawn?: boolean;
 }
 
 export interface WorkflowPanel {

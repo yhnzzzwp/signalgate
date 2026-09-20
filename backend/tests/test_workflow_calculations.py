@@ -12,14 +12,10 @@ def by_id(metrics):
     return {metric["metric_id"]: metric for metric in metrics}
 
 
-# ---- Indikator: acuan analitis / aritmetika manual ----------------------------------------------
-
 def test_rsi_matches_hand_derived_wilder_steps():
     closes = [44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08, 45.89, 46.03, 45.61, 46.28, 46.28]
-    # 14 perubahan: gain total 3,34; loss total 1,40 (dijumlah manual dari deret di atas).
     first = 100 - 100 / (1 + (3.34 / 14) / (1.40 / 14))
     assert calc.rsi_wilder(closes) == pytest.approx(first, abs=1e-6)
-    # Langkah Wilder berikutnya dengan close 46,00 (perubahan -0,28).
     gain, loss = (3.34 / 14 * 13 + 0) / 14, (1.40 / 14 * 13 + 0.28) / 14
     assert calc.rsi_wilder(closes + [46.00]) == pytest.approx(100 - 100 / (1 + gain / loss), abs=1e-6)
 
@@ -32,7 +28,6 @@ def test_rsi_edges():
 
 def test_ema_of_a_linear_series_has_the_analytic_lag_so_macd_is_constant():
     closes = [float(i) for i in range(1, 81)]
-    # EMA_p pada deret linear kemiringan 1 tertinggal (p-1)/2: EMA12 = x-5,5 dan EMA26 = x-12,5.
     line, signal, histogram = calc.macd(closes)
     assert line == pytest.approx(7.0)
     assert signal == pytest.approx(7.0)
@@ -56,18 +51,16 @@ def test_constant_growth_has_zero_volatility_and_exact_return():
     assert values["technical:volume_ratio_20"]["value"] == pytest.approx(1.0)
 
 
-# ---- Kualitas data harian ----------------------------------------------------------------------
-
 def test_clean_daily_never_fills_or_keeps_bad_rows_silently():
     rows = [
         {"date": "2026-09-01", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 5},
-        {"date": "2026-09-01", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 5},   # duplikat identik
+        {"date": "2026-09-01", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 5},
         {"date": "2026-09-02", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 5},
-        {"date": "2026-09-02", "open": 10, "high": 12, "low": 9, "close": 11, "volume": 5},   # duplikat berbeda
-        {"date": "2026-09-03", "open": 10, "high": 9, "low": 11, "close": 10, "volume": 5},   # high < low
-        {"date": "2026-09-04", "open": 10, "high": 11, "low": 9, "close": None, "volume": 5}, # kosong
-        {"date": "2026-09-05", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 0},   # volume nol tetap
-        {"date": "2026-09-30", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 5},   # setelah as_of
+        {"date": "2026-09-02", "open": 10, "high": 12, "low": 9, "close": 11, "volume": 5},
+        {"date": "2026-09-03", "open": 10, "high": 9, "low": 11, "close": 10, "volume": 5},
+        {"date": "2026-09-04", "open": 10, "high": 11, "low": 9, "close": None, "volume": 5},
+        {"date": "2026-09-05", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 0},
+        {"date": "2026-09-30", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 5},
     ]
     bars, quality = calc.clean_daily(rows, date(2026, 9, 20))
     assert [bar["date"].isoformat() for bar in bars] == ["2026-09-01", "2026-09-02", "2026-09-05"]
@@ -84,7 +77,7 @@ def test_a_split_inside_the_window_cuts_the_series_instead_of_mixing_price_bases
     metrics, missing, limitations, info = calc.technical_metrics(bars, quality, breaks, ["daily:1"], "actions:1")
     values = by_id(metrics)
     assert info["segment_start"] == split_day
-    assert values["technical:sma50"]["status"] == "insufficient_data"  # 30 sesi setelah split
+    assert values["technical:sma50"]["status"] == "insufficient_data"
     assert values["technical:sma20"]["status"] == "ok"
     assert "actions:1" in values["technical:sma20"]["source_ids"]
     assert any("belum disesuaikan" in item for item in limitations)
@@ -114,8 +107,6 @@ def test_daily_windows_respect_the_silent_90_day_clamp():
     for start, end in calc.daily_windows(date(2026, 9, 18), 400):
         assert (date.fromisoformat(end) - date.fromisoformat(start)).days <= 89
 
-
-# ---- Fundamental -------------------------------------------------------------------------------
 
 def test_fundamental_growth_compares_the_same_quarter_and_ttm_needs_consecutive_quarters():
     metrics, missing, limitations = calc.fundamental_metrics(fx.company_report(), fx.quarterly(), "report:1", "quarterly:1")
@@ -159,8 +150,6 @@ def test_financial_companies_get_sector_metrics_not_industrial_ratios():
     assert values["fundamental:loan_to_deposit"]["value"] == pytest.approx(940 / 1_276)
 
 
-# ---- Valuation ---------------------------------------------------------------------------------
-
 def valuation(report=None, quarterly=None, point_in_time=True):
     report = report or fx.company_report()
     fundamental, _m, _l = calc.fundamental_metrics(report, quarterly or fx.quarterly(), "report:1", "quarterly:1")
@@ -172,11 +161,9 @@ def test_pe_is_recomputed_and_peer_median_ignores_negative_pe():
     values = by_id(metrics)
     earnings_ttm = (120 + 90 + 85 + 80) * 1e9
     assert values["valuation:pe_ttm_calc"]["value"] == pytest.approx(6_000e9 / earnings_ttm)
-    # Peer sub_sector ber-PE positif: 8, 12, 20 (CCCC -5 dikecualikan; EEEE hanya grup sector).
     assert values["valuation:peer_pe_median"]["value"] == pytest.approx(12.0)
     assert values["valuation:pe_vs_peer_median"]["value"] == pytest.approx((6_000e9 / earnings_ttm) / 12.0 - 1)
     assert values["valuation:pb_mrq_calc"]["value"] == pytest.approx(6_000e9 / 4_000e9)
-    # PE historis positif: 3,5; 5; 10; 15 (2024 negatif dikecualikan).
     assert values["valuation:pe_history_median"]["value"] == pytest.approx(7.5)
     assert any("dikecualikan dari median" in item for item in limitations)
     assert any("target harga" in item for item in limitations)
@@ -188,6 +175,34 @@ def test_a_large_gap_between_own_and_sectors_pe_is_kept_as_a_conflict():
     report["peers"][0]["peers_data"]["companies"][0]["pe_ttm"] = 40.0
     _metrics, _missing, _limitations, conflicts = valuation(report)
     assert len(conflicts) == 1 and "PE TTM" in conflicts[0]
+
+
+def test_pb_uses_parent_equity_not_minority_inclusive_total_equity():
+    rows = [fx.quarter("2026-06-30", 1_200e9, 120e9, equity=134_848e9, stockholders_equity=118_333e9)]
+    metrics, _missing, _limitations = calc.fundamental_metrics(fx.company_report(market_cap=253_600e9), rows,
+                                                                "report:1", "quarterly:1")
+    values = by_id(metrics)
+    assert values["fundamental:total_equity_latest"]["value"] == pytest.approx(134_848e9)
+    assert values["fundamental:parent_equity_latest"]["value"] == pytest.approx(118_333e9)
+    val_metrics, _m, _l, _c = calc.valuation_metrics(fx.company_report(market_cap=253_600e9), metrics, "report:1",
+                                                      "quarterly:1", fx.TICKER, True)
+    pb = by_id(val_metrics)["valuation:pb_mrq_calc"]
+    assert pb["value"] == pytest.approx(253_600e9 / 118_333e9)
+    assert pb["value"] != pytest.approx(253_600e9 / 134_848e9)
+    assert "fundamental:parent_equity_latest" in pb["input_metric_ids"]
+
+
+def test_pb_falls_back_to_total_equity_when_parent_equity_is_unknown():
+    rows = [fx.quarter("2026-06-30", 1_200e9, 120e9, equity=4_000e9)]
+    metrics, _missing, _limitations = calc.fundamental_metrics(fx.company_report(), rows, "report:1", "quarterly:1")
+    assert by_id(metrics)["fundamental:parent_equity_latest"]["value"] == pytest.approx(4_000e9)
+
+
+def test_a_large_gap_between_own_and_sectors_pb_is_kept_as_a_conflict():
+    report = fx.company_report()
+    report["peers"][0]["peers_data"]["companies"][0]["pb_mrq"] = 3.0
+    _metrics, _missing, _limitations, conflicts = valuation(report)
+    assert len(conflicts) == 1 and "PB MRQ" in conflicts[0]
 
 
 def test_historical_as_of_refuses_a_live_company_report():
@@ -208,8 +223,6 @@ def test_nan_never_leaks_as_a_number():
     metric = calc._metric("x", "technical", "x", math.nan, "x", "f", "p", [])
     assert metric["value"] is None and metric["status"] == "not_meaningful"
 
-
-# ---- Pemeriksaan angka pada klaim ---------------------------------------------------------------
 
 def claim_metrics():
     metrics, _m, _l = calc.fundamental_metrics(fx.company_report(), fx.quarterly(), "report:1", "quarterly:1")
@@ -251,4 +264,71 @@ def test_input_metrics_are_collected_once_and_ignore_unknown_ids():
     collected = with_input_metrics(["valuation:pe_vs_peer_median", "valuation:peer_pe_median", "tidak:ada"], metrics)
     ids = [metric["metric_id"] for metric in collected]
     assert ids.count("valuation:peer_pe_median") == 1
-    assert "valuation:pe_ttm_calc" in ids  # masukan dari metrik selisih
+    assert "valuation:pe_ttm_calc" in ids
+
+
+def test_a_missing_open_does_not_drop_the_session():
+    """Run live IDEA 19/09/2026: open=0 pada sesi terakhir membuat technical memakai harga sehari lebih lama."""
+    rows = [{"date": "2026-09-17", "open": 112, "high": 112, "low": 103, "close": 112, "volume": 11_812_300},
+            {"date": "2026-09-18", "open": 0, "high": 123, "low": 121, "close": 123, "volume": 28_804_300}]
+    bars, quality = calc.clean_daily(rows, date(2026, 9, 19))
+    assert [bar["close"] for bar in bars] == [112, 123]
+    assert bars[-1]["open"] is None
+    assert (quality["open_missing"], quality["invalid"]) == (1, 0)
+
+
+def test_a_close_outside_the_day_range_is_still_invalid():
+    bars, quality = calc.clean_daily([{"date": "2026-09-18", "open": 0, "high": 123, "low": 121, "close": 130,
+                                       "volume": 5}], date(2026, 9, 19))
+    assert bars == [] and quality["invalid"] == 1
+
+
+def test_semiannual_filings_with_empty_income_fields_are_explained_and_fall_back_to_annual():
+    """Bentuk nyata IDEA: laporan Juni/Desember, revenue/earnings/OCF kosong, ekuitas terisi."""
+    rows = [fx.quarter(day, None, None, ocf=None) for day in
+            ("2026-06-30", "2025-12-31", "2025-06-30", "2024-12-31", "2024-06-30")]
+    metrics, missing, limitations = calc.fundamental_metrics(fx.company_report(), rows, "report:1", "quarterly:1")
+    values = by_id(metrics)
+    assert any("semesteran" in item for item in limitations)
+    assert any("tidak mengisi revenue, earnings, operating_cash_flow" in item for item in missing)
+    assert values["fundamental:revenue_growth_yoy"]["note"] == "Sectors tidak mengisi revenue untuk Q2 2026."
+    assert values["fundamental:earnings_growth_fy"]["value"] == pytest.approx(360 / 300 - 1)
+    assert values["fundamental:net_margin_fy"]["value"] == pytest.approx(360 / 4_140)
+
+
+def test_comparing_rupiah_with_a_multiple_is_rejected():
+    """Kalimat nyata dari run live IDEA 19/09/2026 yang disetujui gemma3:4b."""
+    from app.workflow.evidence import comparison_issues
+    metrics = claim_metrics()
+    selected = [metrics[key] for key in ("valuation:market_cap", "valuation:pb_mrq_sectors")]
+    statement = (f"Kapitalisasi pasar emiten adalah Rp6,00 triliun, lebih rendah dari PB MRQ Sectors (1,40x).")
+    issues = comparison_issues(statement, selected)
+    assert issues and "berbeda unit" in issues[0]
+
+
+def test_a_comparison_in_the_right_direction_passes():
+    from app.workflow.evidence import comparison_issues
+    metrics = claim_metrics()
+    selected = [metrics[key] for key in ("valuation:pb_mrq_calc", "valuation:pb_mrq_sectors")]
+    assert comparison_issues("PB MRQ dihitung 1,50x lebih tinggi dari PB MRQ Sectors 1,40x.", selected) == []
+    assert comparison_issues("PB MRQ dihitung 1,50x lebih rendah dari PB MRQ Sectors 1,40x.", selected) != []
+
+
+def test_a_difference_percentage_before_the_comparator_is_checked_by_sign():
+    from app.workflow.evidence import comparison_issues
+    metrics = claim_metrics()
+    selected = [metrics[key] for key in ("valuation:pe_vs_peer_median", "valuation:peer_pe_median")]
+    assert comparison_issues("PE TTM berada 33,3% di atas median PE peer 12,00x.", selected) == []
+    wrong = comparison_issues("PE TTM berada 33,3% di bawah median PE peer 12,00x.", selected)
+    assert wrong and "bertanda positif" in wrong[0]
+
+
+def test_the_technical_template_sentence_passes_its_own_comparison_check():
+    """Template kode: "Harga penutupan Rp229 berada di atas SMA20 (+4,3%) ..." tidak boleh ditolak."""
+    from app.workflow import templates
+    bars, quality = calc.clean_daily(fx.daily_rows(sessions=130), fx.AS_OF)
+    metrics = by_id(calc.technical_metrics(bars, quality, [], ["daily:1"], None)[0])
+    claims, _headline = templates.technical_claims(metrics)
+    from app.workflow.evidence import comparison_issues, with_input_metrics
+    for claim in claims:
+        assert comparison_issues(claim["statement"], with_input_metrics(claim["metric_ids"], metrics)) == [], claim

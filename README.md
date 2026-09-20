@@ -288,3 +288,8 @@ docs/                  arsitektur & rasionalisasi keputusan teknis
 
 `python -m app.evaluate` menyediakan capture bukti terbaru, replay snapshot, dan pengukuran
 terhadap label acuan manusia. Hasil model tidak otomatis dianggap benar.
+
+Klaim model di laporan empat panel dinilai manusia per klaim: `python -m app.workflow.labels export`
+membuat lembar label buta (tanpa status sistem), dan `score` menggabungkannya dengan putusan sistem
+menjadi presisi klaim yang tampil, klaim benar yang tertolak, dan tingkat tangkap klaim salah.
+Rubrik dan prosedurnya ada di [`docs/PANDUAN_LABEL.md`](docs/PANDUAN_LABEL.md).
