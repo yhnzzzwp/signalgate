@@ -97,9 +97,11 @@ class ScanRouteTests(unittest.TestCase):
 
     def test_results_are_persisted_so_the_dashboard_can_read_them(self):
         self.run_scan([(event("APEX"), outcome(), {"id": "qA"}), (event("LAPD"), outcome(), {"id": "qL"})])
-        newest = {row["ticker"] for row in self.client.get("/events?limit=5").json()["results"]}
+        rows = self.client.get("/events?limit=5").json()["results"]
+        newest = {row["ticker"] for row in rows}
         self.assertIn("APEX", newest)
         self.assertIn("LAPD", newest)
+        self.assertTrue(all(row["score_kind"] == "heuristic_signal_strength_not_probability" for row in rows))
 
     def test_the_event_list_is_bounded_so_the_payload_cannot_grow_forever(self):
         self.run_scan([(event(f"A{index:03}"), outcome(), {"id": f"q{index}"}) for index in range(6)])
@@ -235,6 +237,63 @@ class ScanRouteTests(unittest.TestCase):
         self.assertFalse(self.main.run_lock.locked())
         _response, second = self.run_scan([(event("RUN4"), outcome(), {"id": "qRUN4"})])
         self.assertEqual(second["status"], "completed")
+
+
+class ScanRetryRouteTests(unittest.TestCase):
+    """/scan/retry/{ticker} memaksa kandidat satu emiten diproses ulang sekarang, melewati jadwal
+    retry otomatis -- ini yang dipencet lewat tombol "Coba lagi sekarang" di dashboard.
+    """
+
+    def setUp(self):
+        import app.main as main
+        self.main = main
+        self.client = TestClient(main.app)
+        self.calls = []
+
+    def run_retry(self, ticker, items):
+        self.published = []
+
+        def fake_queue(*_args, **kwargs):
+            self.calls.append(kwargs)
+            yield from items
+
+        with patch.object(self.main, "research_queue_items", side_effect=fake_queue), \
+             patch.object(self.main, "mark_published",
+                          side_effect=lambda _dir, item_id, _case_id: self.published.append(item_id)):
+            response = self.client.post(f"/scan/retry/{ticker}")
+            if response.status_code != 202:
+                return response, None
+            job_id = response.json()["id"]
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                job = self.client.get(f"/runs/{job_id}").json()
+                if job["status"] != "running":
+                    return response, job
+                time.sleep(0.01)
+            raise AssertionError("job retry tidak selesai dalam 10 detik")
+
+    def test_it_bypasses_the_automatic_retry_schedule_for_just_that_ticker(self):
+        _response, job = self.run_retry("MGLV", [(event("MGLV"), outcome(), {"id": "qMGLV"})])
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["result"], {"ticker": "MGLV", "screened_count": 1})
+        self.assertEqual(self.published, ["qMGLV"])
+        self.assertEqual(self.calls[-1]["retry"], True)
+        self.assertEqual(self.calls[-1]["tickers"], {"MGLV"})
+
+    def test_ticker_is_uppercased_before_filtering(self):
+        _response, job = self.run_retry("mglv", [(event("MGLV"), outcome(), {"id": "qMGLV"})])
+        self.assertEqual(job["result"]["ticker"], "MGLV")
+        self.assertEqual(self.calls[-1]["tickers"], {"MGLV"})
+
+    def test_an_invalid_ticker_is_rejected_before_a_job_is_created(self):
+        response = self.client.post("/scan/retry/not-a-ticker!")
+        self.assertEqual(response.status_code, 422)
+
+    def test_it_runs_while_sectors_is_disabled(self):
+        blocked = self.client.post("/pipeline/run")
+        _response, job = self.run_retry("MGLV", [(event("MGLV"), outcome(), {"id": "qMGLV"})])
+        self.assertEqual(blocked.status_code, 400)
+        self.assertEqual(job["status"], "completed")
 
 
 if __name__ == "__main__":

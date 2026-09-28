@@ -1,4 +1,7 @@
+import { FRONTIER_RULE_TEXT } from "../labels";
 import type { WorkflowClaim, WorkflowMetric, WorkflowPanel, WorkflowReport } from "../types";
+import { ChronologyView } from "./ChronologyView";
+import { FrontierAudit } from "./FrontierAudit";
 
 const DOMAIN_TEXT: Record<string, string> = {
   fundamental: "Fundamental",
@@ -66,6 +69,29 @@ function ClaimRow({ claim }: { claim: WorkflowClaim }) {
         {claim.source_ids.length > 0 && ` · sumber: ${claim.source_ids.join(", ")}`}
       </p>
       {claim.quote && <blockquote className="event-card__quote">“{claim.quote}”</blockquote>}
+      {claim.reviewer_verdicts && claim.reviewer_verdicts.length > 1 && (
+        <p className="event-card__source-meta">
+          {claim.reviewer_conflict && <span className="workflow__conflict">pembanding berbeda pendapat · </span>}
+          {claim.reviewer_verdicts
+            .map(
+              (item) =>
+                `${(item.model ?? item.role).replace(/^ollama:/, "")}: ${
+                  item.status ? (CLAIM_STATUS_TEXT[item.status] ?? item.status) : "tanpa putusan"
+                }`,
+            )
+            .join(" · ")}
+        </p>
+      )}
+      {claim.frontier && (
+        <p className={`event-card__source-meta ${claim.frontier.applied ? "" : "frontier__shadow-note"}`}>
+          Frontier ({claim.frontier.mode === "escalation" ? "escalation" : "shadow, tidak dipakai"}):{" "}
+          {claim.frontier.frontier_status ? (CLAIM_STATUS_TEXT[claim.frontier.frontier_status] ?? claim.frontier.frontier_status) : "tanpa putusan sah"}
+          {" · "}
+          {FRONTIER_RULE_TEXT[claim.frontier.rule] ?? claim.frontier.rule}
+          {claim.frontier.applied && ` · status akhir ${CLAIM_STATUS_TEXT[claim.frontier.final_status] ?? claim.frontier.final_status}`}
+          {claim.frontier.independent?.reason && ` — “${claim.frontier.independent.reason}”`}
+        </p>
+      )}
       {claim.validation_notes.length > 0 && (
         <ul className="event-card__issues">
           {claim.validation_notes.map((note) => (
@@ -142,6 +168,9 @@ function Panel({ panel, metrics }: { panel: WorkflowPanel; metrics: Record<strin
 
 export function WorkflowPanels({ report }: { report: WorkflowReport }) {
   const unresolved = report.validation.unresolved_claim_ids?.length ?? 0;
+  // Laporan lama hanya punya `reviewer_model` (satu nama); laporan baru mencatat urutan pembanding.
+  const reviewers = (report.plan.reviewer_models ?? []).filter((name): name is string => Boolean(name));
+  if (reviewers.length === 0 && report.plan.reviewer_model) reviewers.push(report.plan.reviewer_model);
   return (
     <div className="workflow">
       <header className="workflow__summary">
@@ -156,10 +185,18 @@ export function WorkflowPanels({ report }: { report: WorkflowReport }) {
             {report.credits_used} kredit Sectors · versi laporan {report.report_version}
           </p>
           <p className="event-card__source-meta">
-            Analis {report.plan.analyst_model ?? "tidak ada"} · pembanding {report.plan.reviewer_model ?? "tidak ada"} ·{" "}
-            perbaikan {report.validation.repair_count}x
+            Analis {report.plan.analyst_model ?? "tidak ada"} · pembanding{" "}
+            {reviewers.length > 0 ? reviewers.join(" → ") : "tidak ada"} · perbaikan {report.validation.repair_count}x
             {unresolved > 0 && ` · ${unresolved} klaim belum terverifikasi`}
           </p>
+          {report.runtime?.bound && (
+            <p className="event-card__source-meta">
+              Inferensi: {report.runtime.bound.target === "colab" ? "GPU Colab" : report.runtime.bound.target === "local" ? "MacBook" : "env"} ·{" "}
+              {report.runtime.bound.ollama_url ?? "-"} · frontier{" "}
+              {report.runtime.bound.frontier.enabled ? report.runtime.bound.frontier.mode : "mati"}
+              {report.runtime.history.length > 1 && ` · ${report.runtime.history.length - 1}x resume`}
+            </p>
+          )}
         </div>
       </header>
 
@@ -193,6 +230,32 @@ export function WorkflowPanels({ report }: { report: WorkflowReport }) {
           return panel ? <Panel key={domain} panel={panel} metrics={report.metrics} /> : null;
         })}
       </div>
+
+      {(report.chronology ?? []).length > 0 && <ChronologyView actions={report.chronology ?? []} />}
+
+      <FrontierAudit record={report.frontier} />
+
+      {report.runtime && report.runtime.history.length > 0 && (
+        <details className="event-card__review">
+          <summary>Riwayat konfigurasi run ({report.runtime.history.length})</summary>
+          <ul className="event-card__issues">
+            {report.runtime.history.map((entry, index) => (
+              <li key={`${entry.event}-${entry.at}-${index}`}>
+                {new Date(entry.at).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "short" })} ·{" "}
+                {entry.event}
+                {entry.from_nodes.length > 0 && ` dari node ${entry.from_nodes.join(", ")}`}
+                {entry.snapshot && ` · ${entry.snapshot.target} ${entry.snapshot.ollama_url ?? ""}`}
+                {(entry.changes ?? []).map((change) => (
+                  <span key={change.field} className="event-card__source-meta">
+                    {" "}
+                    · {change.field}: {JSON.stringify(change.before)} → {JSON.stringify(change.after)}
+                  </span>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
 
       <details className="event-card__review">
         <summary>Sumber dan kesegaran data ({report.sources.length})</summary>

@@ -57,6 +57,8 @@ class VerdictLabel(StrEnum):
 
 class Verdict(BaseModel):
     label: VerdictLabel
+    # Skor heuristik dari selisih bobot sinyal (lihat scoring.decide), bukan probabilitas terkalibrasi:
+    # 0.9 tidak berarti 90% peluang benar. Ditampilkan sebagai "Skor X/100" di UI, bukan "confidence".
     confidence: float = Field(ge=0.0, le=1.0)
     # Satu paragraf yang dirangkai Python dari sinyal terverifikasi. Bukan keluaran model, dan ikut
     # dipindai Compliance Gate seperti field prosa lainnya.

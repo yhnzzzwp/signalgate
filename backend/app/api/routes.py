@@ -36,6 +36,7 @@ def _serialize_event(record: ScreenedEventRecord) -> dict:
         "bucket": record.bucket,
         "label": record.label,
         "confidence": record.confidence,
+        "score_kind": "heuristic_signal_strength_not_probability",
         "provider": record.provider,
         "gate_status": record.gate_status,
         "watch_status": record.watch_status,

@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.workflow.graph import NODE_LABELS
-from app.workflow.runner import WorkflowError
+from app.workflow.runner import WorkflowConfigChanged, WorkflowError
 
 router = APIRouter(prefix="/workflow")
 
@@ -40,17 +40,24 @@ def register_workflow_routes(app, runner, start_job, require_sectors, cancellati
         return _launch(run["run_id"], resume=False)
 
     @router.post("/runs/{run_id}/resume", status_code=202)
-    def resume_workflow(run_id: str) -> dict:
+    def resume_workflow(run_id: str, accept_config_change: bool = False) -> dict:
+        """Resume memakai konfigurasi yang sama dengan awal run. Bila lokasi GPU/URL/token/model/mode frontier
+        sudah berubah, resume ditolak (409, berisi daftar perubahan) sampai disetujui eksplisit."""
         if runner.report(run_id) is None and not (runner.run_dir(run_id)).exists():
             raise HTTPException(404, "Run tidak ditemukan; tidak ada checkpoint untuk dilanjutkan.")
-        return _launch(run_id, resume=True)
+        changes = runner.config_changes(run_id)
+        if changes and not accept_config_change:
+            raise HTTPException(409, {"message": str(WorkflowConfigChanged(changes)), "changes": changes,
+                                      "run_id": run_id})
+        return _launch(run_id, resume=True, accept_config_change=accept_config_change)
 
-    def _launch(run_id: str, resume: bool) -> dict:
+    def _launch(run_id: str, resume: bool, accept_config_change: bool = False) -> dict:
         cancel = Event()
 
         def work() -> dict:
             try:
-                return runner.execute(run_id, resume=resume, cancel=cancel)
+                return runner.execute(run_id, resume=resume, cancel=cancel,
+                                      accept_config_change=accept_config_change)
             except WorkflowError as error:
                 raise RuntimeError(str(error)) from error
             finally:

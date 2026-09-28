@@ -14,6 +14,12 @@ const STAGES: Record<RunJob["kind"], { key: string; label: string }[]> = {
     { key: "validate", label: "Validasi silang" },
     { key: "gate", label: "Pemeriksaan kepatuhan" },
   ],
+  // Coba lagi manual per ticker: melewati "scan" (antrean sudah ada), langsung ke model.
+  scan_retry: [
+    { key: "model", label: "Model membaca bukti" },
+    { key: "validate", label: "Validasi silang" },
+    { key: "gate", label: "Pemeriksaan kepatuhan" },
+  ],
   pipeline: [
     { key: "sense", label: "Mengumpulkan kandidat" },
     { key: "model", label: "Model membaca bukti" },
@@ -28,6 +34,7 @@ const STAGES: Record<RunJob["kind"], { key: string; label: string }[]> = {
     { key: "news", label: "Analis berita" },
     { key: "validate", label: "Pemeriksaan kode" },
     { key: "review", label: "Pembanding independen" },
+    { key: "frontier", label: "Kronologi & eskalasi frontier" },
     { key: "synthesis", label: "Menyusun laporan" },
     { key: "publish", label: "Menyimpan laporan" },
   ],
@@ -42,6 +49,8 @@ const WORKFLOW_LABELS: Record<string, string> = {
   validate: "pemeriksaan kode",
   review: "pembanding independen membaca bukti",
   repair: "perbaikan klaim terarah",
+  chronology: "menyusun kronologi aksi korporasi",
+  frontier: "eskalasi ke reviewer frontier",
   synthesis: "menyusun laporan",
   report: "gerbang akhir",
   publish: "menyimpan laporan",
@@ -52,6 +61,7 @@ const ROLE_TEXT: Record<string, string> = {
   reviewer_1: "pembanding 1",
   reviewer_2: "pembanding 2",
   reviewer_3: "pembanding 3",
+  frontier: "reviewer frontier",
 };
 
 /**
@@ -59,8 +69,13 @@ const ROLE_TEXT: Record<string, string> = {
  * padahal yang sedang terjadi adalah validasi silang; tanpa pemetaan ini tahap itu tidak pernah aktif.
  */
 function stageOf(event: StageEvent): string {
-  if (event.stage === "workflow") return String(event.detail?.node ?? "workflow");
-  if (event.stage === "model" && String(event.detail?.role ?? "").startsWith("reviewer")) return "validate";
+  if (event.stage === "workflow") {
+    const node = String(event.detail?.node ?? "workflow");
+    // Kronologi dan frontier satu tahap tampilan: keduanya berjalan setelah pembanding lokal selesai.
+    return node === "chronology" ? "frontier" : node;
+  }
+  const role = String(event.detail?.role ?? "");
+  if (event.stage === "model" && (role.startsWith("reviewer") || role === "frontier")) return "validate";
   return event.stage;
 }
 
@@ -76,9 +91,11 @@ function activeLine(events: StageEvent[]): string {
     const detail = event.detail ?? {};
     if (event.stage === "model") {
       const role = ROLE_TEXT[String(detail.role)] ?? String(detail.role ?? "model");
-      const model = String(detail.model ?? "").replace(/^ollama:/, "");
+      const model = String(detail.model ?? "").replace(/^(ollama|deepseek):/, "");
       if (detail.phase === "start") return `${event.ticker}: ${role} (${model}) sedang membaca bukti…`;
-      return `${event.ticker}: ${role} selesai dalam ${detail.seconds}s`;
+      return detail.seconds !== undefined
+        ? `${event.ticker}: ${role} selesai dalam ${detail.seconds}s`
+        : `${event.ticker}: ${role} selesai`;
     }
     if (event.stage === "workflow") {
       const label = WORKFLOW_LABELS[String(detail.node)] ?? String(detail.node);
@@ -104,7 +121,8 @@ function summarise(event: StageEvent): string {
     case "model":
       return detail.phase === "start"
         ? `${ROLE_TEXT[String(detail.role)] ?? detail.role} mulai membaca`
-        : `${ROLE_TEXT[String(detail.role)] ?? detail.role} selesai · ${detail.seconds}s`;
+        : `${ROLE_TEXT[String(detail.role)] ?? detail.role} selesai` +
+            (detail.seconds !== undefined ? ` · ${detail.seconds}s` : "");
     case "workflow":
       return WORKFLOW_LABELS[String(detail.node)] ?? String(detail.node ?? "");
     case "case":

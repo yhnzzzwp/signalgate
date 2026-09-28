@@ -32,7 +32,7 @@ def capture_payload(think):
     def handler(request):
         seen["body"] = json.loads(request.content)
         return httpx.Response(200, json={"message": {"content": json.dumps(extraction_payload())},
-                                         "done_reason": "stop"})
+                                         "done": True, "done_reason": "stop"})
 
     agent_with(handler, think=think).run("prompt", Extraction)
     return seen["body"]
@@ -49,7 +49,7 @@ class OllamaAgentTests(unittest.TestCase):
         def handler(request):
             seen["body"] = json.loads(request.content)
             return httpx.Response(200, json={"message": {"content": json.dumps(extraction_payload())},
-                                             "done_reason": "stop"})
+                                             "done": True, "done_reason": "stop"})
 
         result = agent_with(handler).run("prompt", Extraction)
         self.assertEqual(result.counterparties[0].name, "PT Contoh")
@@ -59,14 +59,48 @@ class OllamaAgentTests(unittest.TestCase):
 
     def test_output_violating_schema_raises_agent_error(self):
         def handler(request):
-            return httpx.Response(200, json={"message": {"content": '{"label": "beli"}'}, "done_reason": "stop"})
+            return httpx.Response(200, json={"message": {"content": '{"label": "beli"}'},
+                                             "done": True, "done_reason": "stop"})
 
         with self.assertRaises(AgentError):
             agent_with(handler).run("prompt", Extraction)
 
     def test_truncated_output_raises_agent_error(self):
         def handler(request):
-            return httpx.Response(200, json={"message": {"content": "{"}, "done_reason": "length"})
+            return httpx.Response(200, json={"message": {"content": "{"}, "done": True, "done_reason": "length"})
+
+        with self.assertRaises(AgentError):
+            agent_with(handler).run("prompt", Extraction)
+
+    def test_streamed_chunks_are_reassembled_into_one_message(self):
+        """`stream: true` sekarang wajib (tunnel/proxy memutus koneksi yang diam terlalu lama tanpa
+        byte mengalir); isi pesan harus dirakit dari semua baris, bukan cuma baris terakhir."""
+        full = json.dumps(extraction_payload())
+        half = len(full) // 2
+        lines = [
+            json.dumps({"message": {"content": full[:half]}, "done": False}),
+            json.dumps({"message": {"content": full[half:]}, "done": False}),
+            json.dumps({"message": {"content": ""}, "done": True, "done_reason": "stop"}),
+        ]
+
+        def handler(request):
+            return httpx.Response(200, content="\n".join(lines).encode())
+
+        result = agent_with(handler).run("prompt", Extraction)
+        self.assertEqual(result.counterparties[0].name, "PT Contoh")
+
+    def test_stream_without_terminal_chunk_is_rejected_as_incomplete(self):
+        def handler(request):
+            return httpx.Response(200, content=json.dumps({
+                "message": {"content": json.dumps(extraction_payload())}, "done": False,
+            }).encode())
+
+        with self.assertRaises(AgentError):
+            agent_with(handler).run("prompt", Extraction)
+
+    def test_error_chunk_is_not_mistaken_for_an_empty_success(self):
+        def handler(request):
+            return httpx.Response(200, content=json.dumps({"error": "runner crashed", "done": True}).encode())
 
         with self.assertRaises(AgentError):
             agent_with(handler).run("prompt", Extraction)

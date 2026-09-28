@@ -57,6 +57,19 @@ class FactsTests(unittest.TestCase):
     def test_paraphrased_quote_is_rejected(self):
         self.assertIsNone(locate_quote("LAPD berencana menjual anak usaha distribusinya kepada investor", ARTICLE))
 
+    def test_a_dropped_mid_sentence_ticker_annotation_is_still_accepted(self):
+        """Replay HATM 2026-09-19: qwen2.5:14b mengutip "PT Habco Trans Maritima Tbk received
+        shareholder approval..." tapi sumber aslinya "PT Habco Trans Maritima Tbk (HATM) received...";
+        kutipan yang benar sempat ditolak karena token "hatm" di tengah tidak diminta modelnya."""
+        source = "PT Habco Trans Maritima Tbk (HATM) received shareholder approval at its meeting."
+        quote = "PT Habco Trans Maritima Tbk received shareholder approval at its meeting."
+        self.assertEqual(locate_quote(quote, source), source.rstrip("."))
+
+    def test_a_fabricated_parenthetical_in_the_quote_itself_is_still_rejected(self):
+        source = "PT Habco Trans Maritima Tbk (HATM) received shareholder approval at its meeting."
+        quote = "PT Habco Trans Maritima Tbk (fabricated aside) received shareholder approval."
+        self.assertIsNone(locate_quote(quote, source))
+
     def test_generic_counterparty_name_is_rejected(self):
         facts, issues = verified_facts(extraction([party(
             "Pemegang saham lama", "existing_shareholder",

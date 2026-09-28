@@ -220,6 +220,17 @@ class QueueSchedulingTests(unittest.TestCase):
         self.assertEqual(self.tickers(directory), [])
         self.assertEqual(self.tickers(directory, retry=True), ["AA00"])
 
+    def test_a_ticker_filter_forces_retry_for_only_that_candidate(self):
+        """Retry manual per emiten (tombol dashboard) tidak boleh ikut memaksa emiten lain yang
+        jadwal retry otomatisnya memang belum lewat."""
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        directory = self.queue_dir(
+            {"status": "insufficient_evidence", "attempt_count": 1, "next_retry_at": future},
+            {"status": "insufficient_evidence", "attempt_count": 1, "next_retry_at": future},
+        )
+        forced = [item["event"]["ticker"] for _path, item in eligible_items(directory, retry=True, tickers={"AA01"})]
+        self.assertEqual(forced, ["AA01"])
+
     def test_a_candidate_past_its_backoff_comes_back(self):
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         directory = self.queue_dir({"status": "insufficient_evidence", "attempt_count": 1, "next_retry_at": past})

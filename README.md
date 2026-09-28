@@ -36,6 +36,9 @@ di [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Menjalankan
 
+> **Panduan langkah demi langkah** (backend, frontend, MacBook/GPU Colab, Sectors, DeepSeek, pengujian, dan
+> pemecahan masalah): [`docs/PANDUAN_SETUP.md`](docs/PANDUAN_SETUP.md).
+
 ### Setup otomatis
 
 Satu perintah menyiapkan venv, dependensi, model Ollama, dan `.env` — jalankan dengan Python sistem,
@@ -142,12 +145,20 @@ Dua batasan yang mengikat pilihan model:
   selalu memilih jalur reviewer, jadi validator akan terabaikan; sekarang konfigurasi seperti itu
   ditolak saat start dengan pesan yang menyebut apa yang harus dibetulkan.
 
-Mau `llama3.1:8b` seperti contoh di `.env.example`? Ganti satu baris:
-`OLLAMA_REVIEWER_MODELS=["glm4:9b","llama3.1:8b"]`. Saya memilih `gemma3:12b` sebagai default karena
+Mau pembanding lain, misalnya `llama3.1:8b`? Tulis satu baris di `backend/.env`:
+`OLLAMA_REVIEWER_MODELS=["glm4:9b","llama3.1:8b"]`. Ingat bahwa baris eksplisit seperti ini (juga
+`OLLAMA_MODEL`, `WORKFLOW_ANALYST_MODEL`, `WORKFLOW_REVIEWER_MODEL(S)`) mengalahkan profil; hapus atau
+jadikan komentar kalau ingin kembali mengikuti profil. `.env.example` sengaja menulisnya sebagai komentar. Saya memilih `gemma3:12b` sebagai default karena
 Gemma 3 dilatih multibahasa secara eksplisit sementara Indonesia bukan kekuatan Llama 3.1 8B — dan
 pembanding yang lemah berbahaya di sini: aturan penggabungan bersifat pesimistis (`contradicted`
 menang), jadi pembanding yang salah paham menyeret hasil ke `inconclusive`, bukan sekadar jadi
 suara minoritas.
+
+**Memilih MacBook atau GPU Colab dari dashboard.** Tab **Runtime & GPU**: pilih lokasi, (untuk Colab)
+tempel URL layanan dan token gateway dari `colab/signalgate_gpu_setup.ipynb`, **Cek kesiapan**, lalu
+**Aktifkan untuk run berikutnya**. `backend/.env` tetap satu-satunya sumber kredensial: skrip
+`scripts_local/run_*.sh` tidak lagi menyalin file env. Detail, keamanan token, dan resume:
+[`docs/RUNTIME_GPU.md`](docs/RUNTIME_GPU.md).
 
 **Memakai GPU mesin lain tanpa memindahkan backend.** Di mesin ber-GPU jalankan Ollama dengan
 `OLLAMA_HOST=0.0.0.0`, lalu di laptop cukup arahkan `OLLAMA_BASE_URL=http://<ip-mesin-itu>:11434`.
@@ -246,8 +257,14 @@ Pembagian kerjanya tegas: **Python menghitung, model menafsirkan, kode yang memu
   ticker harus cocok, sumber tidak boleh terbit setelah tanggal acuan, kutipan harus ditemukan di
   teks sumber, dan **setiap angka dalam kalimat harus sama dengan metrik yang dirujuk**. Klaim yang
   gagal di sini tetap `unsupported` walau pembanding menyetujuinya.
-- Pembanding independen membaca bukti lebih dulu, baru menilai klaim analis. Ada satu putaran
-  perbaikan terarah; klaim yang tetap gagal tidak pernah masuk ringkasan.
+- Pembanding independen membaca bukti lebih dulu, baru menilai klaim analis. Semua pembanding lokal
+  dijalankan berurutan (profil workstation: `glm4:9b` lalu `gemma3:12b`, dilepas dari VRAM tiap giliran)
+  dan putusan tiap pembanding disimpan terpisah; `supported` butuh persetujuan semua pembanding, satu
+  bantahan menang, dan konflik ditandai. `WORKFLOW_REVIEWER_MODEL` lama tetap berarti tepat satu
+  pembanding. Ada satu putaran perbaikan terarah; klaim yang tetap gagal tidak pernah masuk ringkasan.
+- Angka aksi modal dari berita disusun menjadi kronologi (rencana, revisi, persetujuan, realisasi)
+  dengan tanggal terbit dan tanggal kejadian terpisah. Angka berbeda tanpa bukti revisi ditampilkan
+  sebagai konflik — angka dari artikel terbaru tidak dipilih otomatis.
 - Ringkasan lintas dimensi hanya memakai klaim terverifikasi. Bagian yang menyelipkan angka baru
   dibuang, dan ringkasan jatuh kembali ke kalimat yang disusun kode.
 
@@ -259,11 +276,35 @@ terkini sehingga tidak dipakai untuk tanggal acuan di masa lalu.
 Untuk demo tanpa kredit, jalankan satu run live lalu putar ulang `run_id`-nya: snapshot dipakai
 kembali apa adanya, dengan tanggal pengambilan aslinya tetap tercatat dan ditandai `replay` di UI.
 
+## Reviewer frontier DeepSeek (opsional, berbayar)
+
+Mati secara bawaan (`FRONTIER_ENABLED=false`): tanpa itu tidak ada panggilan, file, atau biaya frontier.
+Bila diaktifkan, DeepSeek (`deepseek-flash` = DeepSeek-V4.1-Flash, thinking mode, JSON mode) membaca
+bukti terpilih **hanya** saat pembanding lokal berbeda pendapat atau angka aksi korporasi lintas waktu
+belum terselesaikan. Mode `shadow` hanya mencatat perbandingannya; mode `escalation` memakai putusannya
+lewat aturan rekonsiliasi kode yang eksplisit — frontier tidak bisa menganulir kutipan palsu, identitas
+salah, angka tidak valid, atau Compliance Gate, dan label tetap dihitung Python.
+
+Ringkas aktivasi: isi `DEEPSEEK_API_KEY=<key-anda>` di `backend/.env` (tidak pernah di frontend/`VITE_*`),
+restart backend, lalu pilih mode `shadow` (kemudian `escalation`) di tab **Runtime & GPU**. Batas bawaan
+disetel untuk saldo prabayar $2: $0,06 per run, $0,60 per hari, $1,80 total (`FRONTIER_MAX_COST_USD_*`).
+
+Batas panggilan/token/biaya ditegakkan dengan reservasi konservatif yang persisten
+(`data/frontier/ledger.sqlite`); biaya yang ditampilkan adalah estimasi USD dari usage API, terpisah dari
+kredit Sectors. `FRONTIER_CACHE_MODE=offline` memutar ulang respons tersimpan tanpa jaringan dan tanpa
+biaya, dan run replay snapshot Sectors bawaannya juga offline untuk frontier. Key kosong atau API gagal
+tidak menjatuhkan run: statusnya tercatat (`unavailable`/`failed`/`budget_exhausted`) dan hasil lokal
+tetap dipakai. Panduan lengkap: [`docs/FRONTIER_DEEPSEEK.md`](docs/FRONTIER_DEEPSEEK.md).
+
 ## Test
 
 ```bash
 cd backend && source .venv/bin/activate && python -m pytest -v
+cd frontend && npm run build && npm run lint && npm run test:render
 ```
+
+Test frontier, budget, kronologi, runtime, dan gateway Colab memakai HTTP palsu; jaringan httpx sungguhan
+diblokir di `tests/conftest.py`, jadi key asli tidak pernah terpakai.
 
 Test tidak membutuhkan Ollama maupun jaringan: engine diuji dengan model dan scraper palsu
 (kutipan salah memicu ekstraksi ulang, validator hanya bisa menurunkan label, mode lenient/strict,

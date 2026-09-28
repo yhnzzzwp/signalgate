@@ -6,13 +6,14 @@ import {
   fetchEvents,
   fetchRun,
   triggerPipelineRun,
+  triggerScanRetry,
   triggerScanRun,
 } from "../api/client";
 import { AuditTrail } from "../components/AuditTrail";
 import { EventCard } from "../components/EventCard";
 import { RunProgress } from "../components/RunProgress";
 import { LABEL_TEXT } from "../labels";
-import type { AuditLogEntry, RunJob, ScanRunResult, ScreenedEventSummary, VerdictLabel } from "../types";
+import type { AuditLogEntry, RunJob, ScanRetryResult, ScanRunResult, ScreenedEventSummary, VerdictLabel } from "../types";
 
 type LabelFilter = VerdictLabel | "all";
 type LoadState = "loading" | "ready" | "error";
@@ -77,6 +78,12 @@ function describeRun(job: RunJob): string {
   if (job.status === "failed") return job.error ?? "Run gagal tanpa keterangan.";
   if (!job.result) return "Run selesai.";
   if (job.kind === "scan") return describeScan(job.result as ScanRunResult);
+  if (job.kind === "scan_retry") {
+    const retried = job.result as ScanRetryResult;
+    return retried.screened_count > 0
+      ? `${retried.ticker}: ${retried.screened_count} kandidat diriset ulang sekarang.`
+      : `${retried.ticker}: tidak ada kandidat tertunda untuk emiten ini.`;
+  }
   const researched = `${job.result.screened_count ?? 0} kasus diriset lewat Sectors.`;
   const skipped = job.result.already_processed ?? 0;
   return skipped > 0 ? `${researched} ${skipped} berita sudah pernah diputus dan dilewati tanpa memakai kredit.` : researched;
@@ -109,6 +116,7 @@ export function Dashboard() {
   const [state, setState] = useState<LoadState>("loading");
   const [job, setJob] = useState<RunJob | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retryTicker, setRetryTicker] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
 
   const running = job?.status === "running" ? job : null;
@@ -202,6 +210,27 @@ export function Dashboard() {
     }
   }
 
+  async function startRetry() {
+    const ticker = retryTicker.trim().toUpperCase();
+    if (!ticker) return;
+    setNotice(null);
+    setError(null);
+    try {
+      setJob(await triggerScanRetry(ticker));
+    } catch (err) {
+      const conflict = err instanceof ApiError && err.status === 409;
+      if (conflict || !(err instanceof ApiError)) {
+        const active = await fetchActiveRun().catch(() => null);
+        if (active) {
+          setJob(active);
+          if (conflict) setNotice("Run lain sedang berjalan; progresnya ditampilkan di bawah.");
+          return;
+        }
+      }
+      setError(await describeFailure(err, () => loadData(0, filter)));
+    }
+  }
+
   async function loadMoreAudit() {
     try {
       const page = await fetchAuditLog({ limit: AUDIT_PAGE_SIZE, offset: auditEntries.length });
@@ -229,7 +258,8 @@ export function Dashboard() {
           <h1>SignalGate</h1>
           <p className="dashboard__disclaimer">
             Penyaringan aksi korporasi IDX dari sumber publik dan Sectors API, dibaca dan diperiksa silang oleh
-            model lokal. Hasilnya screening berbukti, bukan rekomendasi beli atau jual.
+            model lokal. Skor sinyal adalah hasil bobot aturan, bukan peluang hasil itu benar atau prediksi return.
+            Hasilnya screening berbukti, bukan rekomendasi beli atau jual.
           </p>
         </div>
         <div className="dashboard__actions">
@@ -239,6 +269,30 @@ export function Dashboard() {
           <button className="dashboard__run-button" onClick={() => startRun("pipeline")} disabled={running !== null}>
             {running?.kind === "pipeline" ? "Menjalankan pipeline…" : "Jalankan pipeline (Sectors)"}
           </button>
+          <form
+            className="dashboard__retry-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              startRetry();
+            }}
+          >
+            <input
+              className="dashboard__retry-input"
+              value={retryTicker}
+              onChange={(event) => setRetryTicker(event.target.value)}
+              placeholder="Kode saham"
+              maxLength={12}
+              disabled={running !== null}
+              aria-label="Kode saham untuk coba lagi sekarang"
+            />
+            <button
+              type="submit"
+              className="dashboard__run-button"
+              disabled={running !== null || !retryTicker.trim()}
+            >
+              {running?.kind === "scan_retry" ? "Mencoba lagi…" : "Coba lagi sekarang"}
+            </button>
+          </form>
         </div>
       </header>
 

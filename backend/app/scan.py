@@ -412,18 +412,18 @@ def document_map(documents):
     return mappings
 
 
-def research_queue_items(settings, directory, limit, documents=(), retry=False, on_start=None):
+def research_queue_items(settings, directory, limit, documents=(), retry=False, tickers=None, on_start=None):
     """Yield (event, outcome, item) per kandidat antrean. Nol permintaan Sectors.
 
-    Dipakai CLI maupun endpoint /scan/run, supaya keduanya meriset dengan cara yang sama persis.
-    Pemanggil wajib menghabiskan generator ini agar engine ditutup tepat waktu.
+    Dipakai CLI maupun endpoint /scan/run dan /scan/retry, supaya ketiganya meriset dengan cara yang
+    sama persis. Pemanggil wajib menghabiskan generator ini agar engine ditutup tepat waktu.
 
     `on_start(event, index, total)` dipanggil SEBELUM bukti diambil dan model membaca. Menerbitkan
     awal kasus setelah yield berarti nomor kasus baru muncul ketika model sudah selesai, dan `total`
     adalah jumlah kandidat yang benar-benar dipilih, bukan `limit`.
     """
     mappings = document_map(documents)
-    selected = eligible_items(directory, retry)[:max(limit, 0)]
+    selected = eligible_items(directory, retry, tickers)[:max(limit, 0)]
     engine = None
     try:
         for index, (path, item) in enumerate(selected, start=1):
@@ -461,18 +461,23 @@ def research_queue_items(settings, directory, limit, documents=(), retry=False, 
             engine.close()
 
 
-def eligible_items(directory, retry=False):
+def eligible_items(directory, retry=False, tickers=None):
     """Kandidat yang boleh diambil giliran, yang belum pernah dicoba lebih dulu.
 
     Dulu berkas hanya dibaca berurutan nama hash, sehingga kandidat yang selalu gagal terus memakan
     jatah `limit` dan kandidat baru tidak pernah kebagian. Urutannya sekarang: percobaan paling
     sedikit dulu, lalu yang paling lama menunggu.
+
+    `tickers`, bila diisi, membatasi ke ticker itu saja -- dipakai retry manual per emiten supaya
+    tidak ikut memaksa kandidat emiten lain yang jadwal retry otomatisnya memang belum lewat.
     """
     rows = []
     for path in sorted((Path(directory) / 'queue').glob('*.json')):
         try:
             item = json.loads(path.read_text())
         except (OSError, ValueError):
+            continue
+        if tickers is not None and item.get('event', {}).get('ticker') not in tickers:
             continue
         settled = item.get('status') in SETTLED_STATUSES
         if settled and not needs_publication(item) and not retry:

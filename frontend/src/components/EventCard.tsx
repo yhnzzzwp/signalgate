@@ -1,5 +1,6 @@
 import { BUCKET_TEXT, FACT_TOPIC_TEXT, RESEARCH_STATUS_TEXT, VALIDATOR_STATUS_TEXT } from "../labels";
 import type { EvidenceSource, ResearchFact, ScreenedEventSummary } from "../types";
+import { FrontierAudit } from "./FrontierAudit";
 import { VerdictBadge } from "./VerdictBadge";
 
 const isWebUrl = (url: string) => /^https?:\/\//.test(url);
@@ -103,6 +104,12 @@ export function EventCard({ event }: { event: ScreenedEventSummary }) {
           model {event.provider.replace(/^ollama:/, "")}
         </span>
         {needsReview && <span className="event-card__pill event-card__pill--warning">Perlu Pemeriksaan</span>}
+        {research?.frontier?.enabled && (
+          <span className="event-card__pill event-card__pill--muted">
+            frontier {research.frontier.mode === "escalation" ? "escalation" : "shadow"}
+            {research.frontier.applied ? " · dipakai" : ""}
+          </span>
+        )}
       </div>
 
       {detail.verdict.summary && <p className="event-card__summary">{detail.verdict.summary}</p>}
@@ -186,6 +193,18 @@ export function EventCard({ event }: { event: ScreenedEventSummary }) {
               ))}
             </ul>
           )}
+          {research.reviewer_checks && research.reviewer_checks.length > 0 && (
+            <p className="event-card__source-meta">
+              Pembanding lokal (putusan terpisah sebelum digabung):{" "}
+              {research.reviewer_checks
+                .map(
+                  (check) =>
+                    `${check.model.replace(/^ollama:/, "")} ${check.agrees_with_label ? "setuju" : "tidak setuju"} label` +
+                    (check.extra_facts && check.extra_facts.length > 0 ? ` (+${check.extra_facts.length} fakta lain)` : ""),
+                )
+                .join(" · ")}
+            </p>
+          )}
           {research.model_runs && research.model_runs.length > 0 && (
             <p className="event-card__source-meta">
               Giliran model:{" "}
@@ -197,6 +216,8 @@ export function EventCard({ event }: { event: ScreenedEventSummary }) {
           )}
         </details>
       )}
+
+      <FrontierAudit record={research?.frontier} />
 
       <a
         className="event-card__source"

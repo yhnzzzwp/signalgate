@@ -15,6 +15,10 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.db.models import ScreenedEventRecord, WorkflowReportRecord, WorkflowRunRecord
+from app.frontier import evidence as frontier_evidence
+from app.frontier.reconcile import merge_local, reconcile, reviewer_conflict
+from app.research import chronology
+from app.research.facts import locate_quote
 from app.workflow import calculations as calc
 from app.workflow import prompts, templates
 from app.workflow.evidence import (check_claim, comparison_issues, denied_terms, unexplained_numbers,
@@ -23,6 +27,13 @@ from app.research.agents import CHARS_PER_TOKEN
 from app.workflow.models import ANALYST, REVIEWER, ModelPool
 from app.workflow.snapshot import SnapshotStore, fetch_snapshot, now_iso, today_wib
 from app.workflow.state import DOMAINS, MAX_REPAIRS, SCHEMA_VERSION
+
+# Jenis aksi modal yang angka-nya disusun sebagai kronologi (rencana -> revisi -> persetujuan -> realisasi).
+CHRONOLOGY_ACTION_TYPES = {"rights_issue", "private_placement", "acquisition", "divestment", "control_change",
+                           "debt_conversion"}
+CHRONOLOGY_PREFIX = "Kronologi "
+# Ruang prompt frontier di luar artikel: aturan, instruksi, contoh JSON, metrik, klaim, dan pendapat lokal.
+FRONTIER_PROMPT_RESERVE = 9_000
 
 ANNUAL_LAG_DAYS, QUARTER_LAG_DAYS = 90, 60
 PROMPT_HEADROOM = 800
@@ -36,6 +47,20 @@ class Context:
     run_dir: Path
     session_factory: object | None = None
     models: ModelPool | None = None
+    # Reviewer frontier opsional (app.frontier.service.FrontierService). None = FRONTIER_ENABLED=false.
+    frontier: object | None = None
+    # True = hanya respons frontier tersimpan yang boleh dipakai (mis. run replay); API tidak dipanggil.
+    frontier_offline: bool = False
+    # Konfigurasi efektif nonrahasia yang terikat pada run ini (app/runtime.py) dan riwayat resume-nya.
+    runtime: dict | None = None
+    # Indeks entri riwayat konfigurasi yang sedang berlaku; dicatat di setiap node_timings.
+    config_index: int | None = None
+
+
+def _reviewer_roles(ctx: Context) -> list[str]:
+    """Peran pembanding berurutan. Pool lama/palsu tanpa `reviewer_roles` tetap satu pembanding."""
+    roles = getattr(ctx.models, "reviewer_roles", None) if ctx.models is not None else None
+    return list(roles()) if callable(roles) else [REVIEWER]
 
 
 def _as_of(state) -> date:
@@ -61,7 +86,8 @@ def _ok_sources(state, kind=None):
 def plan_node(state, ctx: Context) -> dict:
     """Rencana dibentuk kode: empat dimensi wajib, tidak ada yang boleh dihapus model."""
     as_of = _as_of(state)
-    live = as_of >= today_wib()
+    replay_mode = getattr(ctx.gateway, "snapshot_mode", None) if ctx.gateway.mode == "replay" else None
+    live = replay_mode == "live" if replay_mode else as_of >= today_wib()
     return {
         "mode": "live" if live else "historical",
         "run_dir": str(ctx.run_dir),
@@ -78,10 +104,23 @@ def plan_node(state, ctx: Context) -> dict:
             "prompt_version": prompts.PROMPT_VERSION,
             "calc_version": calc.CALC_VERSION,
             "analyst_model": (ctx.models.name(ANALYST) if ctx.models else None),
-            "reviewer_model": (ctx.models.name(REVIEWER) if ctx.models else None),
+            "reviewer_model": _reviewer_label(ctx),
+            "reviewer_models": [ctx.models.name(role) for role in _reviewer_roles(ctx)] if ctx.models else [],
             "max_repairs": MAX_REPAIRS,
+            "frontier": ({key: value for key, value in ctx.settings.public_frontier().items()
+                          if key in {"enabled", "provider", "model", "mode", "cache_mode"}}
+                         | {"offline": ctx.frontier_offline} if ctx.frontier is not None else {"enabled": False}),
         },
     }
+
+
+def _reviewer_label(ctx: Context) -> str | None:
+    """Nama pembanding untuk tampilan/label: satu nama (seperti dulu) atau digabung "+" bila berurutan."""
+    if not ctx.models:
+        return None
+    names = [ctx.models.name(role) for role in _reviewer_roles(ctx)]
+    names = [name for name in names if name]
+    return "+".join(names) if names else None
 
 
 def _screening_source(ctx: Context, ticker: str, as_of: date):
@@ -262,8 +301,16 @@ def _name_variants(name: str) -> list[str]:
 
 
 def _identity(state, ctx: Context) -> list[str]:
-    """Ticker dan variasi nama emiten yang lazim di berita (lihat `_name_variants`)."""
+    """Ticker dan variasi nama emiten yang lazim di berita (lihat `_name_variants`).
+
+    Kosong bila nama tidak diketahui -- company report tidak diambil di mode historis, sengaja, karena
+    isinya keadaan terkini (lihat snapshot.py). Ticker mentah saja BUKAN pengganti yang aman: artikel
+    berita hampir selalu menyebut nama emiten, jarang kode tickernya apa adanya, jadi mengetatkan ke
+    ticker saja menolak klaim yang benar (identity_issue tidak memeriksa apa pun bila identity kosong).
+    """
     name = _company_view(state, ctx).get("nama") or ""
+    if not name:
+        return []
     candidates = [state["request"]["ticker"], *_name_variants(name)]
     return [item for item in dict.fromkeys(candidates) if item]
 
@@ -392,10 +439,17 @@ def _review_scope(state):
 
 
 def review_node(state, ctx: Context) -> dict:
+    """Pembanding lokal berurutan (satu model di VRAM pada satu waktu). Putusan tiap pembanding disimpan
+    terpisah di `reviewer_verdicts`, lalu digabung pesimistis: satu bantahan menang, dan status supported
+    butuh persetujuan SEMUA pembanding. Konflik antarpembanding ditandai `reviewer_conflict`."""
     metrics_claims, news_claims = _review_scope(state)
     if not metrics_claims and not news_claims:
         return {}
-    notes_store, verdicts = {}, {}
+    roles = _reviewer_roles(ctx)
+    multi = len(roles) > 1
+    notes_store = {}
+    verdicts = {role: {} for role in roles}
+    problems_by_role = {role: [] for role in roles}
     company = _company_view(state, ctx)
     articles, _duplicates = _unique_articles(state, ctx.store)
     usable = [metric for metric in state["metrics"].values() if metric["status"] != "insufficient_data"]
@@ -406,60 +460,80 @@ def review_node(state, ctx: Context) -> dict:
         packets.append(("berita", lambda budget: prompts.news_packet(company, articles,
                                                                     state.get("corporate_actions") or [], budget),
                         news_claims))
-    problems = []
     notes_reserve = ctx.settings.workflow_num_predict * CHARS_PER_TOKEN
-    for label, build, claims in packets:
-        verdict_budget = _budget(ctx, REVIEWER, prompts.REVIEW_VERDICT_INSTRUCTION)
-        packet_budget = min(_budget(ctx, REVIEWER, prompts.REVIEW_NOTES_INSTRUCTION),
-                            max(0, verdict_budget - notes_reserve))
-        packet, _dropped = build(packet_budget)
-        notes, error = ctx.models.call(REVIEWER, prompts.prompt(prompts.REVIEW_NOTES_INSTRUCTION, packet),
-                                       prompts.ReviewNotes) if ctx.models else (None, "Pembanding tidak tersedia.")
-        if error:
-            problems.append(f"Pembacaan independen {label} gagal: {error}")
-            continue
-        notes_store[label] = notes.model_dump(mode="json")
-        base_packet = {**packet, "catatan_independen_anda": notes_store[label]}
-        claims_budget = max(0, verdict_budget - len(json.dumps(base_packet, ensure_ascii=False)))
-        batch_error = None
-        for batch in prompts.claim_batches(claims, claims_budget):
-            verdict_packet = {**base_packet, "klaim_analis": batch}
-            result, error = ctx.models.call(REVIEWER, prompts.prompt(prompts.REVIEW_VERDICT_INSTRUCTION, verdict_packet),
-                                            prompts.ReviewVerdicts)
+    for position, role in enumerate(roles, start=1):
+        who = f" (pembanding {position})" if multi else ""
+        for label, build, claims in packets:
+            verdict_budget = _budget(ctx, role, prompts.REVIEW_VERDICT_INSTRUCTION)
+            packet_budget = min(_budget(ctx, role, prompts.REVIEW_NOTES_INSTRUCTION),
+                                max(0, verdict_budget - notes_reserve))
+            packet, _dropped = build(packet_budget)
+            notes, error = ctx.models.call(role, prompts.prompt(prompts.REVIEW_NOTES_INSTRUCTION, packet),
+                                           prompts.ReviewNotes) if ctx.models else (None, "Pembanding tidak tersedia.")
             if error:
-                batch_error = error
+                problems_by_role[role].append(f"Pembacaan independen {label}{who} gagal: {error}")
                 continue
-            known = {view["claim_id"] for view in batch}
-            for verdict in result.verdicts:
-                if verdict.claim_id in known:
-                    verdicts[verdict.claim_id] = (verdict.status, verdict.reason.strip())
-        if batch_error:
-            problems.append(f"Putusan pembanding {label} gagal: {batch_error}")
+            notes_key = f"{role}:{label}" if multi else label
+            notes_store[notes_key] = notes.model_dump(mode="json")
+            base_packet = {**packet, "catatan_independen_anda": notes_store[notes_key]}
+            claims_budget = max(0, verdict_budget - len(json.dumps(base_packet, ensure_ascii=False)))
+            batch_error = None
+            for batch in prompts.claim_batches(claims, claims_budget):
+                verdict_packet = {**base_packet, "klaim_analis": batch}
+                result, error = ctx.models.call(role, prompts.prompt(prompts.REVIEW_VERDICT_INSTRUCTION, verdict_packet),
+                                                prompts.ReviewVerdicts)
+                if error:
+                    batch_error = error
+                    continue
+                known = {view["claim_id"] for view in batch}
+                for verdict in result.verdicts:
+                    if verdict.claim_id in known:
+                        verdicts[role][verdict.claim_id] = (verdict.status, verdict.reason.strip())
+            if batch_error:
+                problems_by_role[role].append(f"Putusan pembanding {label}{who} gagal: {batch_error}")
+    problems = [problem for role in roles for problem in problems_by_role[role]]
+    names = {role: (ctx.models.name(role) if ctx.models else None) for role in roles}
 
     panels = {}
     for domain, panel in state["panels"].items():
         claims = []
         for claim in panel["claims"]:
-            decision = verdicts.get(claim["claim_id"])
-            if claim["validation_status"] == "pending" and decision:
-                status, reason = decision
-                reviewed = [*(claim.get("review_notes") or []), f"Pembanding: {reason}"] if reason else \
-                    list(claim.get("review_notes") or [])
-                claims.append({**claim, "validation_status": status, "review_notes": reviewed,
-                               "validation_notes": [*(claim.get("mechanical_issues") or []), *reviewed]})
-            elif claim["validation_status"] == "pending":
+            if claim["validation_status"] != "pending" or claim["author"] == "code":
+                claims.append(claim)
+                continue
+            decisions = [verdicts[role].get(claim["claim_id"]) for role in roles]
+            if not any(decisions):
                 note = problems[0] if problems else "Pembanding tidak memberi putusan untuk klaim ini."
                 reviewed = [*(claim.get("review_notes") or []), note]
                 claims.append({**claim, "review_notes": reviewed,
                                "validation_notes": [*(claim.get("mechanical_issues") or []), *reviewed]})
+                continue
+            statuses = [decision[0] if decision else None for decision in decisions]
+            per_reviewer = [{"role": role, "model": names[role], "status": decision[0] if decision else None,
+                             "reason": (decision[1] if decision else
+                                        (problems_by_role[role][0] if problems_by_role[role] else "tidak memberi putusan"))}
+                            for role, decision in zip(roles, decisions)]
+            if multi:
+                notes = [f"Pembanding {position} ({item['model']}): "
+                         + (f"{item['status']} — {item['reason']}" if item["status"] else item["reason"])
+                         for position, item in enumerate(per_reviewer, start=1)]
             else:
-                claims.append(claim)
+                notes = [f"Pembanding: {decisions[0][1]}"] if decisions[0][1] else []
+            conflict = reviewer_conflict(statuses)
+            if conflict:
+                notes.append("Pembanding lokal berbeda pendapat; status digabung pesimistis dan konflik dicatat.")
+            reviewed = [*(claim.get("review_notes") or []), *notes]
+            status = merge_local(statuses, len(roles))
+            claims.append({**claim, "validation_status": status, "review_notes": reviewed,
+                           "validation_notes": [*(claim.get("mechanical_issues") or []), *reviewed],
+                           "reviewer_verdicts": per_reviewer, "reviewer_conflict": conflict})
         limitations = list(panel["limitations"])
         if problems and any(claim["validation_status"] == "pending" for claim in claims):
             limitations.append(problems[0])
         panels[domain] = {**panel, "claims": claims, "limitations": limitations}
     validation = {**(state.get("validation") or {}), "reviewer_problems": problems,
-                  "reviewer_model": ctx.models.name(REVIEWER) if ctx.models else None}
+                  "reviewer_model": _reviewer_label(ctx),
+                  "reviewer_models": [names[role] for role in roles]}
     return {"panels": panels, "reviewer_notes": notes_store, "validation": validation,
             "model_runs": list(ctx.models.runs) if ctx.models else []}
 
@@ -506,7 +580,7 @@ def repair_node(state, ctx: Context) -> dict:
                                "source_ids": list(item.source_ids) or claim["source_ids"],
                                "quote": item.quote.strip() or claim["quote"], "version": claim["version"] + 1,
                                "validation_status": "pending", "validation_notes": [], "mechanical_issues": [],
-                               "review_notes": []})
+                               "review_notes": [], "reviewer_verdicts": [], "reviewer_conflict": False})
             elif claim["claim_id"] in dropped:
                 reviewed = [*(claim.get("review_notes") or []), dropped[claim["claim_id"]]]
                 claims.append({**claim, "validation_status": "unsupported", "review_notes": reviewed,
@@ -520,6 +594,234 @@ def repair_node(state, ctx: Context) -> dict:
         panels[domain] = {**panel, "claims": claims, "limitations": limitations}
     return {"panels": panels, "repair_count": state.get("repair_count", 0) + 1,
             "repaired_claim_ids": sorted(repaired), "model_runs": list(ctx.models.runs) if ctx.models else []}
+
+
+def _news_texts(state, ctx: Context) -> dict[str, str]:
+    return {key: ctx.store.text(source) for key, source in state["sources"].items()
+            if source.get("kind") == "sectors_news" and source.get("path") and source.get("status") == "ok"}
+
+
+def _local_timeline(state, texts: dict[str, str]) -> list[chronology.TimelineEntry]:
+    """Entri kronologi dari klaim berita model yang lolos pemeriksaan mekanis (kutipan terverifikasi)."""
+    events = {event["claim_id"]: event for event in state.get("events") or []}
+    entries = []
+    for claim in state["panels"]["news"]["claims"]:
+        event = events.get(claim["claim_id"])
+        if (claim["author"] == "code" or claim.get("withdrawn") or claim.get("mechanical_issues")
+                or not event or event.get("event_type") not in CHRONOLOGY_ACTION_TYPES):
+            continue
+        quote = claim.get("quote") or ""
+        source_id = next((ref for ref in claim.get("source_ids") or []
+                          if ref in texts and (not quote or locate_quote(quote, texts[ref]))), None)
+        if source_id is None:
+            continue
+        entries += chronology.entries_from_text(
+            prefix=f"{claim['claim_id']}:v{claim.get('version', 1)}", action_type=event["event_type"], action_ref=None,
+            quote=quote, statement=claim["statement"], source_id=source_id, source_text=texts[source_id],
+            published_at=state["sources"][source_id].get("available_at"),
+            event_date_claimed=event.get("event_date") or None, claim_id=claim["claim_id"], origin="local_claim")
+    return entries
+
+
+def _with_chronology_conflicts(panel: dict, actions: list[dict]) -> dict:
+    kept = [item for item in panel["conflicts"] if not item.startswith(CHRONOLOGY_PREFIX)]
+    return {**panel, "conflicts": [*kept, *chronology.conflict_messages(actions)]}
+
+
+def chronology_node(state, ctx: Context) -> dict:
+    """Kronologi angka aksi modal dari klaim berita. Angka berbeda tanpa bukti revisi = konflik panel,
+    bukan angka terbaru yang dipilih diam-diam."""
+    texts = _news_texts(state, ctx)
+    actions = chronology.build_chronology(_local_timeline(state, texts), texts)
+    panels = dict(state["panels"])
+    panels["news"] = _with_chronology_conflicts(panels["news"], actions)
+    return {"chronology": actions, "panels": panels}
+
+
+def _frontier_packet(state, ctx: Context, escalated: list[dict], conflict_actions: list[dict]) -> tuple[dict, set[str]]:
+    """Bukti terpilih untuk frontier: artikel, metrik, dan sumber yang dirujuk klaim yang dieskalasi."""
+    metrics, sources = state["metrics"], state["sources"]
+    metric_ids = []
+    for claim in escalated:
+        for metric in with_input_metrics(claim.get("metric_ids") or [], metrics):
+            if metric["metric_id"] not in metric_ids:
+                metric_ids.append(metric["metric_id"])
+    wanted = {ref for claim in escalated for ref in claim.get("source_ids") or []}
+    wanted |= {ref for action in conflict_actions for ref in action["source_ids"]}
+    for metric_id in metric_ids:
+        wanted |= set(metrics[metric_id].get("source_ids") or [])
+    # Kutipan klaim dan angka kronologi per sumber: potongan artikel dipusatkan di sekitarnya (plus kata
+    # koreksi/revisi, tanggal, angka), bukan sekadar karakter awal artikel.
+    anchors: dict[str, list[str]] = {}
+    for claim in escalated:
+        for ref in claim.get("source_ids") or []:
+            anchors.setdefault(ref, []).append(claim.get("quote") or "")
+    for action in conflict_actions:
+        for entry in action["entries"]:
+            anchors.setdefault(entry["source_id"], []).append(entry["quote"])
+    identity = _identity(state, ctx)
+    news = [(source_id, sources[source_id]) for source_id in sorted(wanted)
+            if sources.get(source_id, {}).get("status") in {"ok", "empty"}
+            and sources[source_id].get("kind") == "sectors_news"]
+    descriptors = [{"id": source_id, "jenis": sources[source_id].get("kind"), "periode": sources[source_id].get("period"),
+                    "tersedia_sejak": sources[source_id].get("available_at")}
+                   for source_id in sorted(wanted) if sources.get(source_id, {}).get("status") in {"ok", "empty"}
+                   and sources[source_id].get("kind") != "sectors_news"]
+    # Sisa ruang prompt dibagi rata antarartikel; langkah kedua butuh ruang tambahan untuk pendapat lokal.
+    available = max(2_000, ctx.settings.frontier_max_input_chars - FRONTIER_PROMPT_RESERVE)
+    per_article = min(4_000, max(500, available // max(1, len(news))))
+
+    def build_articles(limit: int) -> list[dict]:
+        rows = []
+        for source_id, source in news:
+            title, _, body = ctx.store.text(source).partition("\n")
+            cut = frontier_evidence.excerpt(body, anchors=anchors.get(source_id, []), identity=identity,
+                                            max_chars=limit)
+            rows.append({"id": source_id, "tanggal_terbit": source.get("available_at"), "judul": title.strip(),
+                         "isi": cut["teks"], "dipotong": cut["dipotong"], "panjang_asli": cut["panjang_asli"]})
+        return rows
+
+    articles = build_articles(per_article)
+    while per_article > 500 and len(json.dumps(articles, ensure_ascii=False)) > available:
+        per_article = max(500, int(per_article * 0.7))
+        articles = build_articles(per_article)
+    packet = {
+        "emiten": _company_view(state, ctx), "tanggal_acuan": state["request"]["as_of"],
+        "bukti": {"artikel": articles,
+                  "metrik": [{**prompts.metric_view(metrics[metric_id]), "formula": metrics[metric_id]["formula"],
+                              "sumber": metrics[metric_id].get("source_ids") or []} for metric_id in metric_ids],
+                  "sumber_data": descriptors,
+                  "aksi_korporasi_sectors": [{"jenis": action["type"], "tanggal": action["date"]}
+                                             for action in (state.get("corporate_actions") or [])[:8]]},
+        "catatan_bukti": "Artikel bertanda dipotong=true hanya berisi potongan; jangan anggap sebagai seluruh sumber.",
+        "angka_aksi_dari_kutipan": [
+            {"sumber": entry["source_id"], "angka": entry["value_text"], "tanggal_terbit": entry["published_at"],
+             "tanggal_kejadian_tertulis": entry["event_date"], "kutipan": entry["quote"][:300]}
+            for action in conflict_actions for entry in action["entries"]],
+    }
+    valid = set(metric_ids) | {item["id"] for item in articles} | {item["id"] for item in descriptors}
+    return packet, valid
+
+
+def _verified_frontier_timeline(raw_entries: list[dict], state, texts: dict[str, str]):
+    """Timeline frontier dipakai hanya bila kutipannya ditemukan di artikel dan angkanya ada di kutipan."""
+    entries, refs = [], []
+    for index, raw in enumerate(raw_entries, start=1):
+        text = texts.get(raw.get("source_id") or "")
+        span = locate_quote(raw.get("quote") or "", text) if text else None
+        value_text = " ".join((raw.get("value_text") or "").split()).lower()
+        if span is None or not value_text or value_text not in " ".join(span.split()).lower():
+            continue
+        refs.append(raw.get("action_ref") or "")
+        entries += [entry for entry in chronology.entries_from_text(
+            prefix=f"frontier:{index}", action_type=raw.get("action_type") or "other", action_ref=None, quote=span,
+            statement="", source_id=raw["source_id"], source_text=text,
+            published_at=state["sources"][raw["source_id"]].get("available_at"),
+            event_date_claimed=raw.get("event_date") or None, claim_id=None, origin="frontier",
+            stage_hint=raw.get("stage"), revises_source_hint=raw.get("revises_source_id") or None)
+            if entry.metric == raw.get("metric")]
+    return entries, refs
+
+
+def frontier_node(state, ctx: Context) -> dict:
+    """Eskalasi ke reviewer frontier. Pemicu: konflik antarpembanding lokal atau konflik angka lintas waktu.
+
+    Shadow: hasil disimpan di `frontier` dan anotasi klaim, status apa pun tidak berubah. Escalation:
+    status berubah hanya lewat `reconcile()` (klaim yang gagal cek mekanis tidak pernah dieskalasi), dan
+    kronologi hanya berubah oleh entri frontier yang kutipannya terverifikasi. Kegagalan frontier tidak
+    pernah menjatuhkan run: statusnya tercatat dan hasil lokal tetap dipakai.
+    """
+    service = ctx.frontier
+    if service is None:
+        return {"frontier": None}
+    roles = _reviewer_roles(ctx)
+    actions = state.get("chronology") or []
+    conflict_ids = chronology.conflict_claim_ids(actions)
+    triggers, escalated = [], []
+    for claim in _claims(state):
+        if claim["author"] == "code" or claim.get("withdrawn") or claim.get("mechanical_issues"):
+            continue
+        reasons = (["reviewer_conflict"] if claim.get("reviewer_conflict") else []) + \
+                  (["timeline_conflict"] if claim["claim_id"] in conflict_ids else [])
+        if reasons:
+            escalated.append(claim)
+            triggers += [{"claim_id": claim["claim_id"], "reason": reason} for reason in reasons]
+    conflict_actions = [action for action in actions if action["conflicts"]]
+    packet, valid_ids = _frontier_packet(state, ctx, escalated, conflict_actions)
+    claims = [{**prompts.claim_view(claim), "periode": claim.get("period")} for claim in escalated]
+    opinions = {claim["claim_id"]: [{"reviewer": item["role"], "model": item["model"], "status": item["status"],
+                                     "reason": (item.get("reason") or "")[:200]}
+                                    for item in claim.get("reviewer_verdicts") or [] if item.get("status")]
+                for claim in escalated}
+    try:
+        record = service.review(run_key=state["request"]["run_id"], scope="workflow", packet=packet, claims=claims,
+                                valid_ids=valid_ids, local_opinions=opinions, triggers=triggers,
+                                offline=ctx.frontier_offline)
+    except Exception as error:  # noqa: BLE001 - frontier tidak boleh menjatuhkan run lokal yang valid
+        record = {"enabled": True, "mode": ctx.settings.frontier_mode, "status": "failed", "applied": False,
+                  "message": f"Frontier gagal di luar dugaan: {type(error).__name__}", "triggers": triggers,
+                  "calls": [], "verdicts": []}
+    verdicts = {item["claim_id"]: item for item in record.get("verdicts") or []}
+
+    texts = _news_texts(state, ctx)
+    frontier_entries, refs = _verified_frontier_timeline(record.get("timeline_raw") or [], state, texts)
+    augmented = actions
+    if frontier_entries:
+        entries = _local_timeline(state, texts) + frontier_entries
+        chronology.assign_refs(entries, refs, texts)
+        augmented = chronology.build_chronology(entries, texts)
+    augmented_ids = chronology.conflict_claim_ids(augmented)
+    record["chronology"] = augmented
+    record["verified_timeline_entries"] = len(frontier_entries)
+    record["timeline_conflicts"] = {"local": sorted(conflict_ids), "with_frontier": sorted(augmented_ids),
+                                    "local_messages": chronology.conflict_messages(actions),
+                                    "with_frontier_messages": chronology.conflict_messages(augmented)}
+
+    escalate = ctx.settings.frontier_mode == "escalation"
+    decisions = {}
+    for claim in escalated:
+        local = [item["status"] for item in claim.get("reviewer_verdicts") or []] or [claim["validation_status"]]
+        decisions[claim["claim_id"]] = reconcile(local_statuses=local, expected_reviewers=len(roles),
+                                                 verdict=verdicts.get(claim["claim_id"]),
+                                                 mechanical_ok=not claim.get("mechanical_issues"))
+    record["reconciliation"] = [{"claim_id": claim_id, **decision} for claim_id, decision in decisions.items()]
+    record["differences"] = [item for item in record["reconciliation"]
+                             if item["frontier_status"] and item["frontier_status"] not in item["local_statuses"]]
+    record["decision_changes"] = [item["claim_id"] for item in record["reconciliation"] if item["changed"]]
+
+    changed = False
+    panels = {}
+    for domain, panel in state["panels"].items():
+        claims_out = []
+        for claim in panel["claims"]:
+            decision = decisions.get(claim["claim_id"])
+            if decision is None:
+                claims_out.append(claim)
+                continue
+            verdict = verdicts.get(claim["claim_id"]) or {}
+            annotation = {"mode": ctx.settings.frontier_mode, "applied": False, "rule": decision["rule"],
+                          "frontier_status": decision["frontier_status"], "final_status": decision["final_status"],
+                          "note": decision["note"], "independent": verdict.get("independent"),
+                          "second_look": verdict.get("second_look"),
+                          "second_look_needed": verdict.get("second_look_needed", False),
+                          "triggers": [item["reason"] for item in triggers if item["claim_id"] == claim["claim_id"]]}
+            if escalate and decision["changed"]:
+                changed = True
+                note = f"Rekonsiliasi frontier ({decision['rule']}): {decision['note']}"
+                reviewed = [*(claim.get("review_notes") or []), note]
+                claims_out.append({**claim, "validation_status": decision["final_status"], "review_notes": reviewed,
+                                   "validation_notes": [*(claim.get("mechanical_issues") or []), *reviewed],
+                                   "frontier": {**annotation, "applied": True}})
+            else:
+                claims_out.append({**claim, "frontier": annotation})
+        panels[domain] = {**panel, "claims": claims_out}
+    update = {"frontier": record, "panels": panels}
+    if escalate and frontier_entries and chronology.conflict_messages(augmented) != chronology.conflict_messages(actions):
+        panels["news"] = _with_chronology_conflicts(panels["news"], augmented)
+        update["chronology"] = augmented
+        changed = True
+    record["applied"] = escalate and changed
+    return update
 
 
 def _supported(state):
@@ -634,7 +936,13 @@ def report_node(state, ctx: Context) -> dict:
                        "repair_count": state.get("repair_count", 0),
                        "reviewer_notes": state.get("reviewer_notes") or {}},
         "gate": {"status": "needs_review" if rejected else "passed", "rejected_terms": rejected},
+        # Kredit Sectors saja. Token/biaya frontier dicatat terpisah di `frontier.totals` (estimasi USD).
         "credits_used": state.get("credits_used", 0), "model_runs": state.get("model_runs") or [],
+        "chronology": state.get("chronology") or [],
+        "frontier": state.get("frontier"),
+        # Konfigurasi yang benar-benar dipakai (tanpa rahasia) dan riwayat resume-nya.
+        "runtime": ctx.runtime,
+        "node_timings": state.get("node_timings") or [],
         "disclaimer": "Screening dan analisis berbukti, bukan rekomendasi beli atau jual.",
     }
     return {"panels": panels, "report": report, "gate": report["gate"]}
@@ -643,6 +951,10 @@ def report_node(state, ctx: Context) -> dict:
 def publish_node(state, ctx: Context) -> dict:
     """Commit dulu, baru tandai terbit. Publikasi ulang versi yang sama memperbarui baris itu."""
     report = state["report"]
+    if ctx.runtime is not None:
+        # Resume bisa terjadi setelah laporan tersusun (mis. publish gagal); riwayat konfigurasi yang terbit
+        # harus mencakup resume itu, bukan salinan saat node report berjalan.
+        report = {**report, "runtime": ctx.runtime}
     path = ctx.run_dir / f"report-v{report['report_version']}.json"
     if ctx.session_factory is None:
         return {"published": {"report_version": report["report_version"], "path": str(path), "at": now_iso()}}

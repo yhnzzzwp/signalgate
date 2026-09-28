@@ -50,7 +50,7 @@ tidak ada pintu samping yang melewati Compliance Gate. CLI (`python -m app.scan`
 | ② HYPOTHESIZE | `pipeline/hypothesize.py`, `orchestrator.pick_events` | Bucket & prioritas; hanya `PIPELINE_MAX_EVENTS` teratas (default 3) yang diriset |
 | ③ REASON | `research/engine.py` + qwen2.5:7b | Ekstraksi fakta berkutipan (maks `RESEARCH_EXTRACTION_ATTEMPTS`, default 2) |
 | ④ VALIDATE | `research/facts.py` + qwen3:4b, `pipeline/validate.py` | Pencocokan kutipan & nama pihak oleh Python, cek fakta oleh validator, cek numerik |
-| ④b SCORE | `research/scoring.py` | Bobot deterministik → label + confidence |
+| ④b SCORE | `research/scoring.py` | Bobot deterministik → label + skor kekuatan sinyal heuristik (bukan probabilitas) |
 | ⑤ GATE 🔒 | `pipeline/gate.py` | Schema keras + denylist bahasa transaksi **dan** penilaian nilai, dipindai refleksif ke seluruh field prosa |
 | ⑥ [ACT] | — | Dihapus. Tidak ada broker adapter atau eksekusi order. |
 | ⑦ WATCH | `pipeline/watch.py` | Logika transisi status (belum dijadwalkan) |
@@ -234,8 +234,8 @@ menjelaskan fakta yang sudah divalidasi, TradePilot memberi Python hak veto atas
 urutan, dependensi, batas perbaikan, timeout, dan pembatalan; model hanya mengisi bagian bahasa.
 
 ```
-plan → snapshot → calculate → research → news → validate → review ─┬→ repair → validate → review → synthesis
-                                                                    └→ synthesis → report → publish
+plan → snapshot → calculate → research → news → validate → review ─┬→ repair → validate → review → …
+                                                                    └→ chronology → frontier → synthesis → report → publish
 ```
 
 | Node | Pelaksana | Keluaran |
@@ -246,8 +246,10 @@ plan → snapshot → calculate → research → news → validate → review �
 | `research` | analis (Qwen) | tafsiran fundamental dan valuasi, satu panggilan dua panel |
 | `news` | analis (Qwen) | peristiwa berkutipan dengan atribusi dokumen/pernyataan/analis |
 | `validate` | kode | pemeriksaan referensi, identitas, waktu, kutipan, angka, bahasa transaksi |
-| `review` | pembanding (model lain) | pembacaan independen lebih dulu, lalu putusan per klaim |
+| `review` | pembanding lokal berurutan | pembacaan independen lebih dulu, lalu putusan per klaim; putusan tiap pembanding disimpan terpisah (`reviewer_verdicts`), digabung pesimistis |
 | `repair` | analis | satu putaran, hanya klaim bermasalah beserta alasan gagalnya |
+| `chronology` | kode | kronologi angka aksi modal (rencana/revisi/persetujuan/realisasi); angka berbeda tanpa bukti revisi menjadi konflik panel berita |
+| `frontier` | DeepSeek (opsional) | eskalasi konflik pembanding/kronologi; shadow = dicatat saja, escalation = lewat `reconcile.py` |
 | `synthesis` | analis | ringkasan hanya dari klaim terverifikasi; angka baru ditolak |
 | `report`/`publish` | kode | status panel, gerbang bahasa, simpan dengan kunci `(run_id, report_version)` |
 
@@ -266,6 +268,27 @@ untuk aksi korporasi (indikator dipotong di sekitar split/rights issue dan lompa
 endpoint harga memangkas rentang >90 hari tanpa error (karena itu diambil bertahap), laporan kuartalan
 tidak menyertakan tanggal publikasi (tanggal acuan historis memakai batas lapor konservatif 60/90 hari),
 dan company report hanya mewakili keadaan terkini sehingga tidak dipakai untuk tanggal acuan historis.
+
+## Reviewer frontier (opsional)
+
+`backend/app/frontier/` menambahkan DeepSeek sebagai reviewer di atas model lokal, untuk jalur screening
+(`ResearchEngine._escalate`) dan laporan emiten (node `frontier`). Prinsipnya sama dengan bagian lain:
+frontier membaca, kode memutuskan.
+
+- **Pemicu**: konflik antarpembanding lokal (butuh ≥2 pembanding), konflik label pembanding (screening),
+  atau angka aksi korporasi lintas waktu yang belum terselesaikan (laporan). Klaim yang gagal cek mekanis
+  tidak pernah dieskalasi; bukti hilang bukan pemicu.
+- **Dua langkah**: pembacaan bukti independen tanpa pendapat lokal, lalu langkah kedua dengan pendapat
+  lokal hanya untuk klaim yang berbeda. Putusan dipakai hanya bila stabil di kedua langkah.
+- **Rekonsiliasi** (`reconcile.py`): frontier boleh memutus konflik antarpembanding bila sejalan dengan
+  salah satunya, boleh menurunkan, tidak pernah menaikkan status yang disepakati lokal, dan tidak pernah
+  menganulir pemeriksaan mekanis atau Compliance Gate. Konflik yang tidak terselesaikan tetap
+  `needs_review`/`inconclusive`.
+- **Shadow vs escalation**: shadow menyimpan hasil pembanding dan simulasi keputusan tanpa mengubah apa
+  pun yang terbit; escalation menerapkan aturan di atas.
+- **Budget/cache/audit**: reservasi konservatif persisten per run dan per hari, cache berkunci hash bukti
+  untuk replay offline, dan audit lengkap (model, versi prompt/schema/harga, alasan, token, estimasi
+  biaya, error tersensor). Detail: [`FRONTIER_DEEPSEEK.md`](FRONTIER_DEEPSEEK.md).
 
 ## Keterbatasan yang diketahui
 

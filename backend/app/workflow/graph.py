@@ -17,12 +17,14 @@ SEQUENCE = ("plan", "snapshot", "calculate", "research", "news", "validate", "re
 NODE_FUNCTIONS = {
     "plan": "plan_node", "snapshot": "snapshot_node", "calculate": "calculate_node", "research": "research_node",
     "news": "news_node", "validate": "mechanical_node", "review": "review_node", "repair": "repair_node",
+    "chronology": "chronology_node", "frontier": "frontier_node",
     "synthesis": "synthesis_node", "report": "report_node", "publish": "publish_node",
 }
 NODE_LABELS = {
     "plan": "Menyusun rencana", "snapshot": "Mengambil snapshot Sectors", "calculate": "Menghitung metrik",
     "research": "Analis membaca fundamental dan valuasi", "news": "Analis membaca berita",
     "validate": "Pemeriksaan kode", "review": "Pembanding independen", "repair": "Perbaikan terarah",
+    "chronology": "Kronologi aksi korporasi", "frontier": "Eskalasi reviewer frontier",
     "synthesis": "Menyusun laporan", "report": "Gerbang akhir", "publish": "Menyimpan laporan",
 }
 
@@ -49,7 +51,8 @@ def build_graph(context: nodes.Context, checkpointer, *, progress=None, cancel=N
                 progress("start", name, state)
             started = time.monotonic()
             update = function(state, context) or {}
-            timing = {"node": name, "seconds": round(time.monotonic() - started, 2), "at": now_iso()}
+            timing = {"node": name, "seconds": round(time.monotonic() - started, 2), "at": now_iso(),
+                      "config_index": getattr(context, "config_index", None)}
             if progress is not None:
                 progress("end", name, {**state, **update})
             return {**update, "node_timings": [*(state.get("node_timings") or []), timing]}
@@ -62,10 +65,14 @@ def build_graph(context: nodes.Context, checkpointer, *, progress=None, cancel=N
     builder.add_edge(START, SEQUENCE[0])
     for left, right in zip(SEQUENCE, SEQUENCE[1:]):
         builder.add_edge(left, right)
+    # Setelah putaran perbaikan selesai: kronologi angka aksi korporasi, lalu eskalasi frontier (node ini
+    # hanya mencatat status "tidak aktif" bila FRONTIER_ENABLED=false), baru ringkasan.
     builder.add_conditional_edges("review", nodes.route_after_review,
-                                  {"repair": "repair", "synthesis": "synthesis"})
+                                  {"repair": "repair", "synthesis": "chronology"})
     # Klaim yang diperbaiki wajib melewati pemeriksaan kode lagi sebelum dinilai ulang.
     builder.add_edge("repair", "validate")
+    builder.add_edge("chronology", "frontier")
+    builder.add_edge("frontier", "synthesis")
     builder.add_edge("synthesis", "report")
     builder.add_edge("report", "publish")
     builder.add_edge("publish", END)

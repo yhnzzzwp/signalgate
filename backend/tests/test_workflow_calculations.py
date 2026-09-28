@@ -162,9 +162,11 @@ def test_pe_is_recomputed_and_peer_median_ignores_negative_pe():
     earnings_ttm = (120 + 90 + 85 + 80) * 1e9
     assert values["valuation:pe_ttm_calc"]["value"] == pytest.approx(6_000e9 / earnings_ttm)
     assert values["valuation:peer_pe_median"]["value"] == pytest.approx(12.0)
-    assert values["valuation:pe_vs_peer_median"]["value"] == pytest.approx((6_000e9 / earnings_ttm) / 12.0 - 1)
+    assert values["valuation:pe_vs_peer_median"]["value"] == pytest.approx(14.0 / 12.0 - 1)
+    assert values["valuation:pe_vs_peer_median"]["input_metric_ids"][0] == "valuation:pe_ttm_sectors"
     assert values["valuation:pb_mrq_calc"]["value"] == pytest.approx(6_000e9 / 4_000e9)
     assert values["valuation:pe_history_median"]["value"] == pytest.approx(7.5)
+    assert values["valuation:pe_vs_history_median"]["value"] == pytest.approx(14.0 / 7.5 - 1)
     assert any("dikecualikan dari median" in item for item in limitations)
     assert any("target harga" in item for item in limitations)
     assert conflicts == []
@@ -242,7 +244,7 @@ def check(statement, metric_ids, **extra):
 
 def test_a_claim_may_cite_the_inputs_of_the_metric_it_references():
     """Angka pembanding milik metrik turunan tetap tertelusur lewat `input_metric_ids`."""
-    issues = check("PE TTM 16,00x berada 33,3% di atas median PE peer 12,00x.", ["valuation:pe_vs_peer_median"])
+    issues = check("PE TTM 14,00x berada 16,7% di atas median PE peer 12,00x.", ["valuation:pe_vs_peer_median"])
     assert issues == []
 
 
@@ -264,7 +266,43 @@ def test_input_metrics_are_collected_once_and_ignore_unknown_ids():
     collected = with_input_metrics(["valuation:pe_vs_peer_median", "valuation:peer_pe_median", "tidak:ada"], metrics)
     ids = [metric["metric_id"] for metric in collected]
     assert ids.count("valuation:peer_pe_median") == 1
-    assert "valuation:pe_ttm_calc" in ids
+    assert "valuation:pe_ttm_sectors" in ids
+
+
+def test_model_valuation_context_has_no_numbers_and_binds_one_comparison_to_fundamentals():
+    good = check("Premi PE terhadap median peer selaras dengan pertumbuhan pendapatan yang menguat.",
+                 ["valuation:pe_vs_peer_median", "fundamental:revenue_growth_yoy"], author="model:test")
+    assert good == []
+    numbered = check("Premi PE sebesar 16,7% selaras dengan pertumbuhan pendapatan.",
+                     ["valuation:pe_vs_peer_median", "fundamental:revenue_growth_yoy"], author="model:test")
+    assert any("tidak boleh menulis angka" in issue for issue in numbered)
+    no_fundamental = check("Premi PE terhadap median peer perlu diperhatikan.",
+                           ["valuation:pe_vs_peer_median"], author="model:test")
+    assert any("kondisi fundamental" in issue for issue in no_fundamental)
+
+
+def test_model_valuation_context_direction_must_match_python_gap():
+    issues = check("Diskon PE terhadap median peer selaras dengan pertumbuhan pendapatan.",
+                   ["valuation:pe_vs_peer_median", "fundamental:revenue_growth_yoy"], author="model:test")
+    assert any("Arah konteks valuasi salah" in issue for issue in issues)
+
+
+def test_python_valuation_comparison_claims_name_both_metrics_and_pass_checks():
+    from app.workflow import templates
+    from app.workflow.evidence import check_claim
+    metrics = claim_metrics()
+    claims = templates.calculation_claims("valuation", metrics)
+    comparisons = [claim for claim in claims if claim["claim_id"].startswith("valuation:comparison:")]
+    assert {claim["claim_id"] for claim in comparisons} == {
+        "valuation:comparison:pe_vs_peer_median",
+        "valuation:comparison:pb_vs_peer_median",
+        "valuation:comparison:pe_vs_history_median",
+    }
+    sources = {"report:1": {"source_id": "report:1", "ticker": fx.TICKER, "status": "ok"},
+               "quarterly:1": {"source_id": "quarterly:1", "ticker": fx.TICKER, "status": "ok"}}
+    for claim in comparisons:
+        assert "median" in claim["statement"].lower()
+        assert check_claim(claim, metrics, sources, {}, fx.TICKER, fx.AS_OF) == [], claim
 
 
 def test_a_missing_open_does_not_drop_the_session():
@@ -318,8 +356,8 @@ def test_a_difference_percentage_before_the_comparator_is_checked_by_sign():
     from app.workflow.evidence import comparison_issues
     metrics = claim_metrics()
     selected = [metrics[key] for key in ("valuation:pe_vs_peer_median", "valuation:peer_pe_median")]
-    assert comparison_issues("PE TTM berada 33,3% di atas median PE peer 12,00x.", selected) == []
-    wrong = comparison_issues("PE TTM berada 33,3% di bawah median PE peer 12,00x.", selected)
+    assert comparison_issues("PE TTM berada 16,7% di atas median PE peer 12,00x.", selected) == []
+    wrong = comparison_issues("PE TTM berada 16,7% di bawah median PE peer 12,00x.", selected)
     assert wrong and "bertanda positif" in wrong[0]
 
 

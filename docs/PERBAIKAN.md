@@ -569,3 +569,61 @@ bersih di kedua fix.
 - Full suite: 442 lolos (naik dari 437).
 
 Status: **belum di-commit**.
+
+## 16. Reviewer frontier DeepSeek, dua pembanding laporan, kronologi aksi korporasi — 28 September 2026
+
+Instruksi: `docs/CLAUDE_FRONTIER_IMPLEMENTATION.md`. Panduan pemakaian: `docs/FRONTIER_DEEPSEEK.md`.
+
+- **Konfigurasi** (`app/config.py`, `backend/.env.example`): blok `FRONTIER_*` + `DEEPSEEK_API_KEY`
+  (SecretStr, hanya backend). Bawaan `FRONTIER_ENABLED=false` → tidak ada objek/panggilan frontier.
+  Key kosong saat aktif → status `unavailable` dengan pesan jelas, backend tetap start.
+  `.env.example`: `OLLAMA_MODEL`/`OLLAMA_REVIEWER_MODELS` kini komentar supaya profil workstation berlaku.
+- **Adapter** `app/frontier/` terpisah dari Ollama: klien DeepSeek (thinking + `reasoning_effort` +
+  `json_object`, hanya `message.content` yang dipakai), harga berversi, buku besar budget SQLite
+  (reservasi atomik, persisten lintas resume/restart), cache berkunci hash bukti, aturan rekonsiliasi.
+- **Screening** (`research/engine.py`): putusan tiap pembanding disimpan (`reviewer_checks`), eskalasi
+  konflik pembanding/label ke frontier, rekonsiliasi hanya di mode escalation.
+- **Laporan emiten** (`workflow/`): `WORKFLOW_REVIEWER_MODELS` + semua `OLLAMA_REVIEWER_MODELS` dipakai
+  berurutan (sebelumnya hanya yang pertama); `WORKFLOW_REVIEWER_MODEL` lama tetap = satu pembanding dan
+  berperan `reviewer` seperti data run lama. Node baru `chronology` dan `frontier` sebelum `synthesis`.
+- **Kronologi** (`research/chronology.py`): tahap rencana/revisi/persetujuan/realisasi, tanggal terbit vs
+  tanggal kejadian terpisah, revisi hanya dengan bukti, angka berbeda tanpa bukti = konflik panel berita.
+- **Frontend**: `FrontierAudit`, `ChronologyView`, status per pembanding di klaim, tahap progres baru,
+  tipe opsional sehingga laporan/kartu lama tetap dirender. `GET /frontier/status` tanpa nilai key.
+
+Perubahan perilaku yang perlu diketahui walau frontier mati: laporan emiten kini menjalankan semua
+pembanding lokal (waktu run bertambah satu giliran pembanding di profil workstation), dan panel berita
+bisa berstatus perlu pemeriksaan bila angka aksi modal antarsumber bertentangan tanpa bukti revisi.
+
+Status: **belum diuji** (pengujian dilakukan terpisah) dan **belum di-commit**. Tidak ada panggilan
+DeepSeek/Sectors sungguhan yang dijalankan.
+
+Tambahan (28 Sep, saldo DeepSeek hanya $2): batas biaya total seumur ledger `FRONTIER_MAX_COST_USD_TOTAL`
+(bawaan $1,80), batas per run turun ke $0,05 dan per hari ke $0,60. `tests/conftest.py` memaksa
+`FRONTIER_ENABLED=false` dan key kosong supaya test tidak pernah membaca key asli di `.env`.
+
+## 17. Audit QA frontier & pilihan GPU (F01–F09) + QA lanjutan — 28 September 2026
+
+| Temuan | Perbaikan | Tes |
+|---|---|---|
+| F01 aktivasi/pemilih GPU belum ada | Tab **Runtime & GPU**, `GET /runtime/config`, `POST /runtime/check`, `POST /runtime/activate` (operator lokal) | `test_runtime_config.py` |
+| F02 tunnel Colab tanpa autentikasi | `colab/ollama_gateway.py` (Bearer token, allowlist endpoint, Ollama hanya di 127.0.0.1), notebook diperbarui, `OllamaAgent` kirim token, redirect ditolak, validasi URL anti-SSRF | `test_colab_gateway.py` |
+| F03 skrip menimpa `.env` | `run_local.sh`/`run_colab.sh` tanpa `cp`; lokasi GPU dari dashboard | `test_the_run_scripts_no_longer_copy_env_files` |
+| F04 tes frontier belum ada | 9 berkas tes backend + `npm run test:render`; jaringan httpx diblokir | 587 backend, 5 render |
+| F05 reservasi 2 karakter/token | Batas byte UTF-8 + 512, dibulatkan ke atas, overshoot dicatat dan menghentikan run | `test_frontier_ledger.py` |
+| F06 artikel dipotong 1.500 karakter awal | `app/frontier/evidence.py`: potongan di sekitar kutipan/koreksi/tanggal/angka, ditandai `dipotong` | `test_frontier_evidence.py`, T05 integrasi |
+| F07 token retry hilang | Usage dijumlah dari semua percobaan; cache hit tidak dihitung sebagai token baru | B04, U03 |
+| F08 refresh + offline = miss | Offline selalu membaca cache lebih dulu | K03 |
+| F09 resume diam-diam ganti konfigurasi | Snapshot konfigurasi per run, resume dengan perubahan butuh `accept_config_change`, riwayat + `config_index` | G05 |
+| QA-P1 token lama terkirim ke host baru | Token diikat ke endpoint asal; host baru butuh token baru atau persetujuan eksplisit | `test_p1_*` |
+| QA-P2 daftar model gagal = siap | Status pembacaan model tersendiri; gagal baca = belum siap | `test_p2_an_unreadable_model_list_is_not_ready` |
+| QA-P2 aktivasi walau model hilang | Ditolak 409 kecuali `allow_not_ready` → "tersimpan, belum siap" | `test_p2_activation_*` |
+| QA-P2 probe GPU saat run aktif | Ditolak saat ada run; memegang `run_lock` selama probe | `test_p2_gpu_probe_*`, `test_p2_main_holds_*` |
+
+Semua bug di atas disisipkan kembali sementara dan terbukti ditangkap tes (lalu dipulihkan). Juga ditemukan
+lewat tes G05: laporan yang terbit setelah resume dari node `publish` masih membawa catatan konfigurasi lama —
+`publish_node` kini menyegarkan riwayat runtime. `data/runtime/` (token) dan `data/frontier/` di-gitignore.
+
+Belum dilakukan (uji langsung oleh pemilik proyek): GPU MacBook dengan tiga model, notebook Colab + gateway
+sungguhan, smoke test DeepSeek shadow, evaluasi akurasi terhadap label manusia. Status: **belum di-commit**.
+

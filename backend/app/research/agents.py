@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 from pydantic import BaseModel
 
@@ -39,6 +41,7 @@ class OllamaAgent:
         client: httpx.Client | None = None,
         keep_alive: str | int = "5m",
         num_predict: int = OUTPUT_TOKEN_BUDGET,
+        auth_token: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -47,7 +50,10 @@ class OllamaAgent:
         self.think = think
         self.digest = "unknown"
         self.keep_alive = keep_alive
-        self.client = client or httpx.Client(timeout=timeout)
+        # Gateway Colab mewajibkan Bearer token. Redirect tidak diikuti: endpoint yang mengalihkan ke alamat
+        # lain (mis. halaman login atau alamat internal) diperlakukan sebagai gagal, bukan diikuti diam-diam.
+        headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else None
+        self.client = client or httpx.Client(timeout=timeout, headers=headers, follow_redirects=False)
 
     @property
     def name(self) -> str:
@@ -60,6 +66,9 @@ class OllamaAgent:
     def check_ready(self) -> None:
         try:
             response = self.client.get(f"{self.base_url}/api/tags", timeout=5.0)
+            if response.status_code in (401, 403):
+                raise AgentError(f"Gateway Ollama di {self.base_url} menolak token (HTTP {response.status_code}); "
+                                 "tempel token baru dari notebook Colab di dashboard.")
             response.raise_for_status()
             models = response.json().get("models", [])
             installed = {model["name"] for model in models}
@@ -89,7 +98,7 @@ class OllamaAgent:
             )
         payload = {
             "model": self.model,
-            "stream": False,
+            "stream": True,
             "keep_alive": self.keep_alive,
             "format": inline_schema(schema.model_json_schema()),
             "options": {"temperature": 0, "num_ctx": self.num_ctx, "num_predict": self.num_predict},
@@ -98,15 +107,34 @@ class OllamaAgent:
         if self.think is not None:
             payload["think"] = self.think
         try:
-            response = self.client.post(f"{self.base_url}/api/chat", json=payload)
-            response.raise_for_status()
-            body = response.json()
+            # Streaming, bukan cuma dirakit ulang di sini: tunnel/proxy (mis. Cloudflare quick tunnel)
+            # memutus koneksi yang diam tanpa byte mengalir selama puluhan detik menunggu model 14B
+            # selesai, walau permintaannya sendiri belum benar-benar timeout.
+            content, done_reason, completed = [], None, False
+            with self.client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    chunk = json.loads(line)
+                    if not isinstance(chunk, dict):
+                        raise ValueError("baris stream Ollama bukan objek JSON")
+                    if chunk.get("error"):
+                        raise ValueError("Ollama mengembalikan error di tengah stream")
+                    piece = (chunk.get("message") or {}).get("content") or ""
+                    if not isinstance(piece, str):
+                        raise ValueError("isi stream Ollama bukan teks")
+                    content.append(piece)
+                    if chunk.get("done"):
+                        done_reason = chunk.get("done_reason")
+                        completed = True
+            if not completed:
+                raise ValueError("stream Ollama berakhir tanpa penanda selesai")
+            body = {"done_reason": done_reason, "message": {"content": "".join(content)}}
         except httpx.TimeoutException:
             raise AgentError(f"{self.name}: timeout menunggu model.") from None
         except (httpx.HTTPError, ValueError):
             raise AgentError(f"{self.name}: permintaan ke Ollama gagal.") from None
-        if not isinstance(body, dict):
-            raise AgentError(f"{self.name}: respons Ollama bukan objek JSON.")
         if body.get("done_reason") == "length":
             raise AgentError(f"{self.name}: output terpotong batas token.")
         try:

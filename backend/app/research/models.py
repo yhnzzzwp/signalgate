@@ -102,3 +102,7 @@ class ResearchOutcome(BaseModel):
     signals: list[dict] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
     evidence: list[dict] = Field(default_factory=list)
+    # Putusan per pembanding lokal sebelum digabung, supaya konflik tidak hilang saat penggabungan.
+    reviewer_checks: list[dict] = Field(default_factory=list)
+    # Audit reviewer frontier. None = frontier tidak aktif (juga untuk kasus lama tanpa field ini).
+    frontier: dict | None = None

@@ -26,6 +26,22 @@ def simplify(text: str) -> str:
     return " ".join(token for token in tokens if token not in LEGAL_TOKENS)
 
 
+def _match_from(tokens: list[re.Match], in_parens: list[bool], start: int, wanted: list[str]) -> int | None:
+    """Indeks token terakhir yang cocok kalau `wanted` ditemukan mulai `start`, boleh melompati token
+    yang berasal dari dalam tanda kurung (mis. "(HATM)") saat token itu sendiri tidak diminta -- model
+    rutin melepas anotasi begitu saat mengutip. Ketidakcocokan di luar tanda kurung tetap gagal: ini
+    bukan pencocokan fuzzy umum, cuma toleransi untuk anotasi yang tidak membawa substansi klaim.
+    """
+    i = start
+    for word in wanted:
+        while i < len(tokens) and tokens[i].group() != word and in_parens[i]:
+            i += 1
+        if i >= len(tokens) or tokens[i].group() != word:
+            return None
+        i += 1
+    return i - 1
+
+
 def locate_quote(quote: str, source: str) -> str | None:
     needle = flatten(quote).lower()
     if len(needle) < MIN_QUOTE_CHARS:
@@ -35,13 +51,19 @@ def locate_quote(quote: str, source: str) -> str | None:
     position = haystack.find(needle)
     if position >= 0:
         return original[position:position + len(needle)]
-    # Permit punctuation differences only. Fuzzy substrings can drop "tidak" or
-    # change a number while retaining 85% of a sentence and reversing its meaning.
-    tokens = list(re.finditer(r"\w+", original.lower()))
+    # Permit punctuation differences and dropped parentheticals only. Fuzzy substrings can drop
+    # "tidak" or change a number while retaining 85% of a sentence and reversing its meaning.
+    lowered = original.lower()
+    spans = [match.span() for match in re.finditer(r"\([^)]*\)", lowered)]
+    tokens = list(re.finditer(r"\w+", lowered))
+    in_parens = [any(start <= token.start() < end for start, end in spans) for token in tokens]
     wanted = re.findall(r"\w+", needle)
+    if not wanted:
+        return None
     for start in range(len(tokens) - len(wanted) + 1):
-        if wanted and [token.group() for token in tokens[start:start + len(wanted)]] == wanted:
-            return original[tokens[start].start():tokens[start + len(wanted) - 1].end()]
+        end = _match_from(tokens, in_parens, start, wanted)
+        if end is not None:
+            return original[tokens[start].start():tokens[end].end()]
     return None
 
 

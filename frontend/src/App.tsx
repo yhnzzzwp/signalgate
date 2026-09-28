@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { Dashboard } from "./pages/Dashboard";
 import { Reports } from "./pages/Reports";
+import { Runtime } from "./pages/Runtime";
 
-type Tab = "screening" | "reports";
+type Tab = "screening" | "reports" | "runtime";
 
 const TABS: { key: Tab; label: string; hint: string }[] = [
   { key: "screening", label: "Screening aksi korporasi", hint: "Red flag struktural dari pengumuman dan berita" },
   { key: "reports", label: "Laporan emiten", hint: "Empat panel: fundamental, valuasi, technical, berita" },
+  { key: "runtime", label: "Runtime & GPU", hint: "Lokasi GPU (MacBook/Colab), cek kesiapan, mode frontier" },
 ];
 
 export function App() {
@@ -26,7 +28,7 @@ export function App() {
           </button>
         ))}
       </nav>
-      {tab === "screening" ? <Dashboard /> : <Reports />}
+      {tab === "screening" ? <Dashboard /> : tab === "reports" ? <Reports /> : <Runtime />}
     </main>
   );
 }

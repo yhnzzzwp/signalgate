@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:render": "vite build --ssr tests/render.test.tsx --outDir .render-test --emptyOutDir --logLevel warn && node .render-test/render.test.js"
   },
   "dependencies": {
     "react": "^19.2.8",

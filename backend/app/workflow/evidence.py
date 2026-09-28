@@ -11,6 +11,7 @@ from datetime import date
 
 from app.pipeline.gate import DENYLIST_TERMS
 from app.research.facts import locate_quote
+from app.workflow.calculations import VALUATION_COMPARISON_IDS
 
 _DENY = [(term, re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)) for term in DENYLIST_TERMS]
 NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)*")
@@ -21,6 +22,8 @@ LOWER_WORDS = ("lebih rendah", "di bawah", "lebih kecil", "lebih murah")
 HIGHER_WORDS = ("lebih tinggi", "di atas", "lebih besar", "lebih mahal")
 COMPARATOR = re.compile(r"(lebih rendah|lebih tinggi|lebih kecil|lebih besar|lebih murah|lebih mahal|di bawah|di atas)",
                         re.IGNORECASE)
+VALUATION_LOWER = re.compile(r"\b(diskon|lebih rendah|di bawah)\b", re.IGNORECASE)
+VALUATION_HIGHER = re.compile(r"\b(premi|lebih tinggi|di atas)\b", re.IGNORECASE)
 
 
 def number_tokens(text: str) -> list[str]:
@@ -227,6 +230,37 @@ def identity_issue(claim: dict, identity: list[str]) -> str | None:
     return f"Klaim tidak menyebut emiten ({', '.join(name for name in identity if name)}); bisa jadi tentang emiten lain di artikel yang sama."
 
 
+def valuation_context_issues(claim: dict, metrics: dict[str, dict]) -> list[str]:
+    """Jaga pembagian kerja panel valuasi: kode membandingkan angka, model menjelaskan konteks.
+
+    Satu klaim model harus mengikat tepat satu hasil perbandingan Python dengan setidaknya satu metrik
+    fundamental. Angka dilarang seluruhnya agar model tidak mengambil alih lagi identitas/nilai metrik.
+    """
+    if claim.get("domain") != "valuation" or claim.get("author", "code") == "code":
+        return []
+    issues = []
+    statement = claim.get("statement") or ""
+    if number_tokens(statement):
+        issues.append("Interpretasi valuasi model tidak boleh menulis angka; perbandingan angka ditulis kode.")
+    refs = [ref for ref in claim.get("metric_ids") or [] if ref in metrics]
+    comparisons = [ref for ref in refs if ref in VALUATION_COMPARISON_IDS]
+    fundamentals = [ref for ref in refs if metrics[ref].get("domain") == "fundamental"]
+    if len(comparisons) != 1:
+        issues.append("Interpretasi valuasi wajib merujuk tepat satu metrik perbandingan yang dihitung Python.")
+    if not fundamentals:
+        issues.append("Interpretasi valuasi wajib merujuk kondisi fundamental yang menjelaskan konteks perbandingan.")
+    if len(comparisons) == 1:
+        value = metrics[comparisons[0]].get("value")
+        says_lower, says_higher = bool(VALUATION_LOWER.search(statement)), bool(VALUATION_HIGHER.search(statement))
+        if says_lower and says_higher:
+            issues.append("Interpretasi valuasi menyebut arah rendah dan tinggi sekaligus untuk satu perbandingan.")
+        elif value is not None and value > 0 and says_lower:
+            issues.append("Arah konteks valuasi salah: metrik perbandingan positif, tetapi kalimat menyebut diskon/lebih rendah.")
+        elif value is not None and value < 0 and says_higher:
+            issues.append("Arah konteks valuasi salah: metrik perbandingan negatif, tetapi kalimat menyebut premi/lebih tinggi.")
+    return issues
+
+
 def _available(source: dict) -> date | None:
     value = source.get("available_at")
     try:
@@ -280,6 +314,7 @@ def check_claim(claim: dict, metrics: dict[str, dict], sources: dict[str, dict],
     if numbers:
         issues.append(f"Angka tanpa dasar metrik/sumber: {', '.join(numbers)}.")
     issues += comparison_issues(claim.get("statement", ""), referenced_metrics)
+    issues += valuation_context_issues(claim, metrics)
     who = identity_issue(claim, identity if identity is not None else [ticker])
     if who:
         issues.append(who)

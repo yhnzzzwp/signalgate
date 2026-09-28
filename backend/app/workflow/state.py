@@ -11,7 +11,7 @@ from typing import Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-SCHEMA_VERSION = "workflow-2026-09-18.1"
+SCHEMA_VERSION = "workflow-2026-09-21.1"
 DOMAINS: tuple[str, ...] = ("fundamental", "valuation", "technical", "news")
 MAX_REPAIRS = 1
 
@@ -94,6 +94,11 @@ class Claim(Strict):
     version: int = 1
     withdrawn: bool = False
     author: str = "code"
+    # Putusan tiap pembanding lokal sebelum digabung; kosong pada run lama.
+    reviewer_verdicts: list[dict] = Field(default_factory=list)
+    reviewer_conflict: bool = False
+    # Anotasi frontier (shadow atau escalation); None bila frontier tidak aktif atau klaim tidak dieskalasi.
+    frontier: dict | None = None
 
 
 class Panel(Strict):
@@ -145,6 +150,8 @@ class GraphState(TypedDict, total=False):
     reviewer_notes: dict
     repair_count: int
     repaired_claim_ids: list[str]
+    chronology: list[dict]
+    frontier: dict | None
     synthesis: dict
     gate: dict
     report: dict

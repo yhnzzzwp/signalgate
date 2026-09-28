@@ -5,15 +5,14 @@ Kosakata sengaja deskriptif ("di atas rata-rata 50 sesi"), bukan sinyal transaks
 """
 from __future__ import annotations
 
-from app.workflow.evidence import display
+from app.workflow.evidence import display, format_value
 
 CALCULATION_METRICS = {
     "fundamental": ("revenue_growth_yoy", "earnings_growth_yoy", "net_margin_latest", "revenue_ttm", "earnings_ttm",
                     "operating_cash_flow_ttm", "cash_conversion_ttm", "liabilities_to_equity", "debt_to_equity",
                     "net_interest_income_growth_yoy", "loan_to_deposit", "revenue_growth_fy", "earnings_growth_fy",
                     "net_margin_fy"),
-    "valuation": ("pe_ttm_calc", "pe_ttm_sectors", "pb_mrq_calc", "pb_mrq_sectors", "peer_pe_median",
-                  "pe_vs_peer_median", "peer_pb_median", "pb_vs_peer_median", "pe_history_median"),
+    "valuation": ("market_cap", "pe_ttm_calc", "pe_ttm_sectors", "pb_mrq_calc", "pb_mrq_sectors"),
 }
 
 
@@ -25,6 +24,43 @@ def calculation_claims(domain: str, metrics: dict[str, dict]) -> list[dict]:
             continue
         claims.append(_claim(f"{domain}:calc:{key}", domain, "calculation",
                              f"{metric['name']} ({metric['period']}): {display(metric)}.", [metric["metric_id"]]))
+    if domain == "valuation":
+        claims.extend(valuation_comparison_claims(metrics))
+    return claims
+
+
+def valuation_comparison_claims(metrics: dict[str, dict]) -> list[dict]:
+    """Tulis angka, pasangan metrik, dan arah perbandingan sepenuhnya dari hasil Python.
+
+    Model hanya menambahkan konteks fundamental. Dengan begitu ia tidak dapat menukar PE dengan PB,
+    menyebut median sebagai rata-rata, atau membalik "di atas"/"di bawah" sambil tetap lolos.
+    """
+    labels = {
+        "valuation:pe_vs_peer_median": "median PE TTM peer",
+        "valuation:pb_vs_peer_median": "median PB peer",
+        "valuation:pe_vs_history_median": "median PE historis",
+    }
+    claims = []
+    for metric_id in labels:
+        gap = metrics.get(metric_id)
+        if not gap or gap.get("status") != "ok" or gap.get("value") is None:
+            continue
+        inputs = [metrics.get(item) for item in gap.get("input_metric_ids") or []]
+        if len(inputs) != 2 or any(item is None or item.get("status") != "ok" for item in inputs):
+            continue
+        own, benchmark = inputs
+        value = float(gap["value"])
+        if value == 0:
+            relation = "setara dengan"
+            difference = ""
+        else:
+            relation = "di atas" if value > 0 else "di bawah"
+            difference = f" {format_value(abs(value), 'ratio')} {relation}"
+        statement = (f"{own['name']} {display(own)} berada{difference} {labels[metric_id]} "
+                     f"{display(benchmark)}." if value != 0 else
+                     f"{own['name']} {display(own)} {relation} {labels[metric_id]} {display(benchmark)}.")
+        claims.append(_claim(f"valuation:comparison:{metric_id.rsplit(':', 1)[-1]}", "valuation", "calculation",
+                             statement, [metric_id]))
     return claims
 
 

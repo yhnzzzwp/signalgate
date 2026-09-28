@@ -39,8 +39,9 @@ def snapshot_responses(**overrides):
 def research(statement="Pertumbuhan pendapatan kuartalan menguat dibanding periode yang sama tahun lalu.",
              metric_ids=("fundamental:revenue_growth_yoy",)):
     return {"fundamental": [{"statement": statement, "metric_ids": list(metric_ids), "limitations": []}],
-            "valuation": [{"statement": "Penilaian pasar berada di atas median pembanding subsektor.",
-                           "metric_ids": ["valuation:pe_vs_peer_median"], "limitations": []}]}
+            "valuation": [{"statement": "Premi PE terhadap median peer selaras dengan pertumbuhan pendapatan.",
+                           "metric_ids": ["valuation:pe_vs_peer_median", "fundamental:revenue_growth_yoy"],
+                           "limitations": []}]}
 
 
 def news_events(quote="menggelar rights issue", statement="PT Test Abadi Tbk (TEST) mengumumkan rencana rights issue."):
@@ -268,11 +269,12 @@ class WorkflowGraphTests(WorkflowTestBase):
         self.assertEqual(claim["validation_status"], "unsupported")
         self.assertTrue(any("Arah perbandingan salah" in note for note in claim["validation_notes"]))
 
-    def test_a_correct_comparison_and_ids_written_in_the_text_pass(self):
+    def test_a_number_free_valuation_context_bound_to_python_comparison_passes(self):
         runner = self.runner({"ResearchOutput": {
             "fundamental": [], "valuation": [{
-                "statement": "PB MRQ dihitung 1,50x lebih tinggi dari PB MRQ Sectors 1,40x (valuation:pb_mrq_calc).",
-                "metric_ids": ["valuation:pb_mrq_calc", "valuation:pb_mrq_sectors"], "limitations": []}]}})
+                "statement": "Premi PE terhadap median peer selaras dengan pertumbuhan pendapatan yang menguat.",
+                "metric_ids": ["valuation:pe_vs_peer_median", "fundamental:revenue_growth_yoy"],
+                "limitations": []}]}})
         _run, result = self.run_once(runner)
         report = runner.report(result["run_id"])
         claim = next(claim for claim in report["panels"]["valuation"]["claims"] if claim["author"] != "code")
@@ -373,6 +375,8 @@ class WorkflowGraphTests(WorkflowTestBase):
         self.assertEqual(replay["as_of"], first["as_of"], "replay wajib memakai tanggal acuan run aslinya")
         self.assertEqual(outcome["credits_used"], 0)
         self.assertEqual(report["data_mode"], "replay")
+        self.assertEqual(report["mode"], "live", "replay mempertahankan semantik waktu snapshot asal")
+        self.assertTrue(report["panels"]["valuation"]["metrics"], "company report tersimpan tidak boleh dibuang")
         live = runner.report(result["run_id"])
         self.assertEqual([source["fetched_at"] for source in report["sources"] if source["kind"] == "sectors_quarterly"],
                          [source["fetched_at"] for source in live["sources"] if source["kind"] == "sectors_quarterly"])
@@ -517,3 +521,23 @@ class NameVariantsTests(unittest.TestCase):
         claim = {"domain": "news", "author": "model:ollama:qwen2.5:14b",
                  "statement": "PT Telkom Indonesia Tbk membuka opsi melepas saham anak usaha."}
         self.assertIsNone(identity_issue(claim, identity))
+
+
+class HistoricalIdentityTests(unittest.TestCase):
+    """Replay HATM 2026-09-19 (dijalankan sehari setelahnya): mode historis tidak mengambil company
+    report (sengaja, snapshot.py), jadi nama emiten tidak diketahui. `_identity()` dulu jatuh ke
+    ticker mentah saja ("HATM") -- tapi artikel berita menulis nama lengkap "PT Habco Trans Maritima
+    Tbk" tanpa kode ticker sama sekali, jadi identity_issue menolak keliru klaim yang benar."""
+
+    def test_identity_is_empty_when_the_company_name_is_unknown(self):
+        state = {"request": {"ticker": "HATM", "as_of": "2026-09-19", "horizon": "medium"},
+                 "sources": {"sectors:company_report": {"status": "excluded"}}}
+        ctx = nodes.Context(settings=None, store=type("S", (), {"payload": lambda self, s: None})(),
+                            gateway=None, run_dir=Path("."))
+        self.assertEqual(nodes._identity(state, ctx), [])
+
+    def test_a_full_name_claim_is_not_rejected_when_identity_is_unavailable(self):
+        from app.workflow.evidence import identity_issue
+        claim = {"domain": "news", "author": "model:ollama:qwen2.5:14b",
+                 "statement": "PT Habco Trans Maritima Tbk menyelesaikan penempatan saham pribadi."}
+        self.assertIsNone(identity_issue(claim, identity=[]))

@@ -1,4 +1,6 @@
 .env
+.env.local
+.env.colab
 *.db
 
 __pycache__/
@@ -20,3 +22,7 @@ cases/
 data/library/
 data/workflow/
 data/scans/
+# Cache respons + buku besar budget frontier (lokal; replay offline membaca dari sini).
+data/frontier/
+# Pilihan runtime dari dashboard + token gateway Colab (secrets.json, izin 0600). Jangan pernah di-commit.
+data/runtime/

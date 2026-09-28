@@ -10,7 +10,7 @@ import math
 from datetime import date, timedelta
 from statistics import median
 
-CALC_VERSION = "calc-2026-09-19.1"
+CALC_VERSION = "calc-2026-09-21.1"
 
 MIN_OBS = {"return_20": 21, "return_60": 61, "sma20": 20, "sma50": 50, "rsi14": 30, "atr14": 30,
            "macd": 60, "volume_ratio_20": 21, "volatility_20": 21}
@@ -18,6 +18,11 @@ SUSPECT_JUMP = 0.5
 STALE_DAYS = 7
 PEER_MINIMUM = 3
 VALUATION_MISMATCH = 0.15
+VALUATION_COMPARISON_IDS = frozenset({
+    "valuation:pe_vs_peer_median",
+    "valuation:pb_vs_peer_median",
+    "valuation:pe_vs_history_median",
+})
 
 
 def _metric(metric_id, domain, name, value, unit, formula, period, source_ids, *, status="ok", note=None,
@@ -228,6 +233,21 @@ def _peer_rows(report):
     return (data or {}).get("companies") or []
 
 
+def _peer_values(peers: list[dict], field: str) -> tuple[str, list[float], int]:
+    """Pilih kelompok pembanding terkecil yang masih cukup besar untuk satu jenis rasio.
+
+    PE dan PB dipilih terpisah. Dulu kelompok PB tanpa sengaja mewarisi kelompok yang dipilih untuk
+    PE, sehingga median PB bisa berubah hanya karena beberapa peer merugi dan PE-nya dikeluarkan.
+    """
+    for scope in ("sub_sector", "sector"):
+        scoped = [row for row in peers if scope in (row.get("group") or [])]
+        positive = [value for value in (_number(row.get(field)) for row in scoped)
+                    if value is not None and value > 0]
+        if len(positive) >= PEER_MINIMUM or scope == "sector":
+            return scope, positive, len(scoped) - len(positive)
+    return "sector", [], 0
+
+
 def valuation_metrics(report: dict | None, fundamental: list[dict], report_source: str | None,
                       quarterly_source: str | None, ticker: str, point_in_time: bool) -> tuple[list[dict], list[str], list[str], list[str]]:
     metrics, missing, limitations, conflicts = [], [], [], []
@@ -302,18 +322,18 @@ def valuation_metrics(report: dict | None, fundamental: list[dict], report_sourc
                              "atau ekuitas kemungkinan berbeda (mis. aksi korporasi terbaru belum tercermin "
                              "di salah satu sumber), keduanya ditampilkan.")
 
-    own_pe = (pe_calc or {}).get("value") or (pe_sectors or {}).get("value")
-    own_pe_id = (pe_calc if (pe_calc or {}).get("value") else pe_sectors or {}).get("metric_id")
-    own_pb_metric = next((m for m in metrics if m["metric_id"] == "valuation:pb_mrq_sectors"), None)
+    # Perbandingan peer memakai rasio emiten dari tabel peers Sectors bila ada, sebab numerator,
+    # periode, dan basisnya sama dengan baris pembanding. Hitungan sendiri tetap ditampilkan sebagai
+    # pemeriksaan silang, lalu menjadi fallback bila baris emiten sendiri tidak tersedia.
+    own_pe_metric = pe_sectors if (pe_sectors or {}).get("value") else pe_calc
+    own_pe = (own_pe_metric or {}).get("value")
+    own_pe_id = (own_pe_metric or {}).get("metric_id")
+    own_pb_sectors = next((m for m in metrics if m["metric_id"] == "valuation:pb_mrq_sectors"), None)
+    own_pb_metric = own_pb_sectors if (own_pb_sectors or {}).get("value") else pb_calc
     peers = [row for row in _peer_rows(report) if "self" not in (row.get("group") or [])
              and str(row.get("symbol", "")).removesuffix(".JK").upper() != ticker]
-    for scope in ("sub_sector", "sector"):
-        scoped = [row for row in peers if scope in (row.get("group") or [])]
-        positive_pe = [v for v in (_number(row.get("pe_ttm")) for row in scoped) if v is not None and v > 0]
-        if len(positive_pe) >= PEER_MINIMUM or scope == "sector":
-            break
-    excluded = len(scoped) - len(positive_pe)
-    group_label = f"peer {scope} Sectors ({len(positive_pe)} dengan PE positif, {excluded} dikecualikan)"
+    pe_scope, positive_pe, excluded = _peer_values(peers, "pe_ttm")
+    group_label = f"peer {pe_scope} Sectors ({len(positive_pe)} dengan PE positif, {excluded} dikecualikan)"
     if len(positive_pe) >= PEER_MINIMUM:
         peer_pe = median(positive_pe)
         metrics.append(_metric("valuation:peer_pe_median", "valuation", "Median PE TTM peer", peer_pe, "x",
@@ -327,16 +347,23 @@ def valuation_metrics(report: dict | None, fundamental: list[dict], report_sourc
                                "versi Sectors yang memasukkan PE negatif tidak dipakai.")
     else:
         missing.append(f"Peer dengan PE positif kurang dari {PEER_MINIMUM}; perbandingan relatif PE tidak dihitung.")
-    positive_pb = [v for v in (_number(row.get("pb_mrq")) for row in scoped) if v is not None and v > 0]
+    pb_scope, positive_pb, excluded_pb = _peer_values(peers, "pb_mrq")
     if len(positive_pb) >= PEER_MINIMUM:
         peer_pb = median(positive_pb)
         metrics.append(_metric("valuation:peer_pb_median", "valuation", "Median PB peer", peer_pb, "x",
-                               "median(pb_mrq peer > 0)", f"peer {scope} Sectors ({len(positive_pb)} dengan PB positif)", r_src))
+                               "median(pb_mrq peer > 0)",
+                               f"peer {pb_scope} Sectors ({len(positive_pb)} dengan PB positif, "
+                               f"{excluded_pb} dikecualikan)", r_src))
         if own_pb_metric and own_pb_metric["value"]:
             metrics.append(_metric("valuation:pb_vs_peer_median", "valuation", "Selisih PB terhadap median peer",
                                    own_pb_metric["value"] / peer_pb - 1, "ratio",
-                                   "valuation:pb_mrq_sectors / valuation:peer_pb_median - 1", f"peer {scope}", r_src,
-                                   inputs=("valuation:pb_mrq_sectors", "valuation:peer_pb_median")))
+                                   f"{own_pb_metric['metric_id']} / valuation:peer_pb_median - 1",
+                                   f"peer {pb_scope}", r_src,
+                                   inputs=(own_pb_metric["metric_id"], "valuation:peer_pb_median")))
+        if excluded_pb:
+            limitations.append(f"{excluded_pb} peer dengan PB nol/negatif/kosong dikecualikan dari median PB.")
+    else:
+        missing.append(f"Peer dengan PB positif kurang dari {PEER_MINIMUM}; perbandingan relatif PB tidak dihitung.")
 
     history = [row for row in ((report.get("valuation") or {}).get("historical_valuation") or [])
                if isinstance(row, dict) and isinstance(row.get("year"), int)]
@@ -351,6 +378,12 @@ def valuation_metrics(report: dict | None, fundamental: list[dict], report_sourc
                                "min(historical_valuation.pe > 0)", span, r_src))
         metrics.append(_metric("valuation:pe_history_max", "valuation", "PE historis tertinggi", max(values), "x",
                                "max(historical_valuation.pe > 0)", span, r_src))
+        if own_pe:
+            history_median = median(values)
+            metrics.append(_metric("valuation:pe_vs_history_median", "valuation",
+                                   "Selisih PE terhadap median historis", own_pe / history_median - 1, "ratio",
+                                   f"{own_pe_id} / valuation:pe_history_median - 1", span, r_src,
+                                   inputs=(own_pe_id, "valuation:pe_history_median")))
         if len(positive) < len(pes):
             limitations.append(f"{len(pes) - len(positive)} tahun dengan PE nol/negatif dikecualikan dari rentang historis.")
     else:

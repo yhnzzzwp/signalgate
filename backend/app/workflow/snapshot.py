@@ -68,14 +68,28 @@ class ReplayGateway:
     mode = "replay"
 
     def __init__(self, run_dir: Path) -> None:
+        run_dir = Path(run_dir)
         self.index: dict[str, Path] = {}
-        for path in sorted((Path(run_dir) / "sources").glob("*.json")):
+        original_mode = None
+        reports = sorted(run_dir.glob("report-v*.json"))
+        if reports:
+            try:
+                original_mode = json.loads(reports[-1].read_text(encoding="utf-8")).get("mode")
+            except (OSError, ValueError):
+                pass
+        saw_company_report = False
+        for path in sorted((run_dir / "sources").glob("*.json")):
             stored = json.loads(path.read_text(encoding="utf-8"))
             source = stored.get("source") or {}
             if source.get("status") == "ok" and stored.get("request_key"):
                 self.index[stored["request_key"]] = path
+                saw_company_report |= source.get("endpoint") == "company_report"
         if not self.index:
             raise SourceUnavailable(f"Tidak ada snapshot yang bisa diputar ulang di {run_dir}.")
+        # Replay harus mempertahankan semantik waktu saat snapshot dibuat. Membandingkan `as_of`
+        # lama dengan tanggal hari ini akan salah mengubah snapshot live menjadi historis, membuang
+        # company report yang sudah tersimpan, dan mengosongkan seluruh panel valuasi.
+        self.snapshot_mode = original_mode or ("live" if saw_company_report else "historical")
 
     def fetch(self, endpoint: str, params: dict) -> tuple[Any, str]:
         path = self.index.get(request_key(endpoint, params))

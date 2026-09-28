@@ -10,6 +10,7 @@ import {
   startWorkflowRun,
 } from "../api/client";
 import { RunProgress } from "../components/RunProgress";
+import { FRONTIER_STATUS_TEXT } from "../labels";
 import { WorkflowPanels } from "../components/WorkflowPanels";
 import type { RunJob, WorkflowReport, WorkflowRun } from "../types";
 
@@ -33,7 +34,14 @@ function describeRun(job: RunJob): string {
   const unresolved = result.unresolved_claims
     ? `, ${result.unresolved_claims} klaim belum terverifikasi`
     : "";
-  return `Laporan ${result.ticker} ${RUN_STATUS_TEXT[result.status ?? ""] ?? result.status} (${credits})${unresolved}. ${panels}.`;
+  const frontier = result.frontier_status
+    ? ` Frontier ${result.frontier_mode ?? ""}: ${FRONTIER_STATUS_TEXT[result.frontier_status] ?? result.frontier_status}` +
+      (typeof result.frontier_cost_usd_estimate === "number"
+        ? `, estimasi ≈ $${result.frontier_cost_usd_estimate.toFixed(4)}`
+        : "") +
+      "."
+    : "";
+  return `Laporan ${result.ticker} ${RUN_STATUS_TEXT[result.status ?? ""] ?? result.status} (${credits})${unresolved}. ${panels}.${frontier}`;
 }
 
 export function Reports() {
@@ -47,6 +55,12 @@ export function Reports() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Resume yang ditolak karena konfigurasi runtime berubah sejak run dimulai: tampilkan perubahannya dulu.
+  const [pendingResume, setPendingResume] = useState<{
+    runId: string;
+    message: string;
+    changes: { field: string; before: unknown; after: unknown }[];
+  } | null>(null);
 
   const running = job?.status === "running" ? job : null;
 
@@ -133,11 +147,17 @@ export function Reports() {
     }
   }
 
-  async function resume(runId: string) {
+  async function resume(runId: string, acceptConfigChange = false) {
     setError(null);
+    setPendingResume(null);
     try {
-      setJob(await resumeWorkflowRun(runId));
+      setJob(await resumeWorkflowRun(runId, acceptConfigChange));
     } catch (err) {
+      const detail = err instanceof ApiError ? (err.detail as { changes?: unknown } | undefined) : undefined;
+      if (err instanceof ApiError && err.status === 409 && Array.isArray(detail?.changes)) {
+        setPendingResume({ runId, message: err.message, changes: detail.changes as never });
+        return;
+      }
       setError(err instanceof Error ? err.message : "Run tidak bisa dilanjutkan.");
     }
   }
@@ -204,6 +224,28 @@ export function Reports() {
       {error && (
         <div className="dashboard__error" role="alert">
           {error}
+        </div>
+      )}
+      {pendingResume && (
+        <div className="dashboard__notice" role="alertdialog" aria-label="Konfigurasi berubah">
+          <p>{pendingResume.message}</p>
+          <ul className="event-card__issues">
+            {pendingResume.changes.map((change) => (
+              <li key={change.field}>
+                <code>{change.field}</code>: {JSON.stringify(change.before)} → {JSON.stringify(change.after)}
+              </li>
+            ))}
+          </ul>
+          <p className="event-card__source-meta">
+            Tahap yang sudah selesai tetap dipakai; tahap berikutnya memakai konfigurasi baru dan perubahan ini
+            dicatat di riwayat run.
+          </p>
+          <button className="dashboard__run-button" onClick={() => void resume(pendingResume.runId, true)}>
+            Lanjutkan dengan konfigurasi baru
+          </button>{" "}
+          <button className="dashboard__filter" onClick={() => setPendingResume(null)}>
+            Batal
+          </button>
         </div>
       )}
       {notice && (

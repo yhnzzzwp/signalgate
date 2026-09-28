@@ -1,4 +1,5 @@
 from app.config import Settings
+from app.frontier.service import build_frontier
 from app.research.agents import OllamaAgent
 from app.research.engine import ResearchEngine
 
@@ -17,18 +18,22 @@ def make_agent(settings: Settings, model_name: str) -> OllamaAgent:
         settings.ollama_timeout_seconds,
         think=False if model_name.startswith(THINKING_MODEL_PREFIXES) else None,
         keep_alive=settings.ollama_keep_alive,
+        auth_token=settings.ollama_auth_token.get_secret_value(),
     )
 
 
 def build_provider(settings: Settings) -> ResearchEngine:
+    """Engine screening. Frontier (DeepSeek) hanya ikut bila FRONTIER_ENABLED=true; adapternya terpisah
+    dari Ollama dan tidak pernah memakai OLLAMA_BASE_URL."""
     if settings.llm_backend != "ollama":
         return ResearchEngine(settings)
+    frontier = build_frontier(settings)
     analyst = make_agent(settings, settings.ollama_model)
     if settings.ollama_reviewer_models:
         reviewers = [analyst if name == settings.ollama_model else make_agent(settings, name)
                      for name in dict.fromkeys(settings.ollama_reviewer_models)]
-        return ResearchEngine(settings, model=analyst, reviewers=reviewers)
+        return ResearchEngine(settings, model=analyst, reviewers=reviewers, frontier=frontier)
     validator = analyst
     if settings.ollama_validator_model and settings.ollama_validator_model != settings.ollama_model:
         validator = make_agent(settings, settings.ollama_validator_model)
-    return ResearchEngine(settings, model=analyst, validator=validator)
+    return ResearchEngine(settings, model=analyst, validator=validator, frontier=frontier)

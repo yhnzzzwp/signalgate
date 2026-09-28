@@ -44,7 +44,8 @@ def main() -> None:
         elapsed = time.monotonic() - started
         gate = apply_gate(outcome.verdict)
         cached = " | dari cache" if outcome.cached else ""
-        print(f"=== {ticker}: {outcome.verdict.label.value} (confidence {outcome.verdict.confidence:.2f}) | "
+        print(f"=== {ticker}: {outcome.verdict.label.value} "
+              f"(skor sinyal heuristik {outcome.verdict.confidence:.2f}, bukan probabilitas) | "
               f"status {outcome.status} | gate {gate.status.value} | {elapsed:.0f} detik{cached}")
         for fact in outcome.facts:
             print(f'  fakta  {fact.id} {fact.topic}={fact.value} [{fact.validator_status}]: "{fact.quote[:100]}"')

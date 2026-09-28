@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.workflow.evidence import display
 
-PROMPT_VERSION = "workflow-prompt-2026-09-19.2"
+PROMPT_VERSION = "workflow-prompt-2026-09-21.2"
 
 RULES = (
     "Kamu bagian dari alat riset saham Indonesia. Aturan yang tidak bisa dilanggar:\n"
@@ -31,14 +31,21 @@ RULES = (
 
 RESEARCH_INSTRUCTION = (
     "Jelaskan kondisi fundamental dan valuasi emiten dari metrik yang sudah dihitung kode.\n"
-    "- `fundamental`: pertumbuhan, profitabilitas, arus kas, dan risiko neraca.\n"
-    "- `valuation`: bagaimana penilaian pasar dibanding data bisnis dan pembanding.\n"
+    "- `fundamental`: pertumbuhan, profitabilitas, arus kas, dan risiko neraca. Tiap klaim: satu "
+    "kalimat, sebutkan periodenya, dan rujuk metrik yang mendasarinya.\n"
+    "- `valuation`: perbandingan angkanya (PE/PB terhadap median peer/historis) SUDAH ditulis kode "
+    "sebagai klaim terpisah. Jangan menuliskan angka, tanggal, nilai PE/PB, atau besar selisih di "
+    "`statement`; jangan pula membuat perbandingan angka baru.\n"
+    "- Setiap klaim `valuation` menjelaskan konteks SATU perbandingan: rujuk tepat satu metrik bernama "
+    "`Selisih ...` dan sedikitnya satu metrik `fundamental:*` di `metric_ids`. Jelaskan apakah "
+    "premi/diskon relatif itu selaras, tidak selaras, atau belum bisa dinilai dari pertumbuhan, "
+    "profitabilitas, atau arus kas yang tersedia. Contoh bentuk kalimat: `Premi PE terhadap median "
+    "peer belum didukung oleh pertumbuhan laba yang melemah.`\n"
     "Periksa arah setiap perbandingan: angka yang lebih besar berarti lebih tinggi.\n"
     "Saat metrik pertumbuhan bernilai negatif, jangan gabungkan kata \"menurun/turun\" dengan tanda minus "
     "(bukan \"menurun sebesar -9,2%\", tapi \"menurun sebesar 9,2%\" atau \"tumbuh -9,2%\") — kombinasi "
     "keduanya terbaca sebagai kontradiksi dan akan ditolak walau angkanya benar.\n"
-    "Tiap klaim: satu kalimat, sebutkan periodenya, dan rujuk metrik yang mendasarinya. Bedakan fakta "
-    "dari tafsiran, dan sebut keterbatasan basis data (misalnya periode berbeda atau peer sedikit)."
+    "Bedakan fakta dari tafsiran, dan sebut keterbatasan basis data (misalnya periode berbeda atau peer sedikit)."
 )
 
 NEWS_INSTRUCTION = (
@@ -70,7 +77,8 @@ REVIEW_VERDICT_INSTRUCTION = (
     "hanya bila ANGKA atau ARAH yang disebut klaim benar-benar berbeda dari metrik, bukan karena tanda minus "
     "muncul berdampingan dengan kata \"menurun\".\n"
     "Beda periode atau beda dimensi bukan kontradiksi: fundamental membaik dan harga melemah bisa "
-    "sama-sama benar. Nilai isi klaimnya, bukan gaya bahasanya."
+    "sama-sama benar. Untuk klaim valuation model, pastikan kalimatnya tanpa angka, merujuk tepat satu "
+    "metrik selisih valuasi dan sedikitnya satu metrik fundamental. Nilai isi klaimnya, bukan gaya bahasanya."
 )
 
 REPAIR_INSTRUCTION = (
