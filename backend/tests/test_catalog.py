@@ -16,7 +16,10 @@ def fired_signal_texts() -> list[str]:
     from pathlib import Path
     from app.config import REPO_ROOT
     texts = []
-    for path in Path(REPO_ROOT / "cases").rglob("decision.json"):
+    decisions = list(Path(REPO_ROOT / "cases").rglob("decision.json"))
+    if not decisions:
+        raise unittest.SkipTest("Arsip analisis nyata di cases/ tidak tersedia pada instalasi ini")
+    for path in decisions:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

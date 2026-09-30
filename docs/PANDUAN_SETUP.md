@@ -99,7 +99,7 @@ npm run lint
 npm run test:render
 ```
 
-Di Windows, ganti `.venv/bin/python` dengan `.venv\Scripts\python`. Tes memakai model/HTTP palsu; beberapa tes gateway membuka port loopback lokal. Pengujian inferensi nyata dilakukan terpisah lewat cek kesiapan atau analisis.
+Di Windows, ganti `.venv/bin/python` dengan `.venv\Scripts\python`. Tes memakai model/HTTP palsu; beberapa tes gateway membuka port loopback lokal. Satu tes audit arsip dilewati bila `cases/` belum berisi hasil analisis nyata. Pengujian inferensi nyata dilakukan terpisah lewat cek kesiapan atau analisis.
 
 ## Jika gagal
 
