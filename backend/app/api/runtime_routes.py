@@ -17,7 +17,8 @@ from app.config import Settings
 from app.runtime import EndpointError, RuntimeStore, check, display_url, fingerprint, normalize_endpoint, resolve
 
 LOCAL_CLIENTS = {"127.0.0.1", "::1", "localhost"}
-DASHBOARD_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173"}
+DASHBOARD_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173",
+                     "http://localhost:8000", "http://127.0.0.1:8000"}
 
 
 class CheckRequest(BaseModel):
@@ -59,7 +60,7 @@ def public_config(settings: Settings, store: RuntimeStore, active_run) -> dict:
     state = store.state()
     resolved = resolve(settings, store)
     stored_token = store.token()
-    return {"state": {"revision": state.revision, "target": state.target or "env",
+    return {"local_only": settings.local_only, "state": {"revision": state.revision, "target": state.target or "env",
                       "colab_url": state.colab_url, "frontier_mode": state.frontier_mode or "env",
                       "updated_at": state.updated_at, "ready_at_activation": state.ready_at_activation,
                       "token_configured": bool(stored_token), "token_fingerprint": fingerprint(stored_token),
@@ -125,6 +126,10 @@ def register_runtime_routes(app, settings: Settings, store: RuntimeStore, active
     @router.post("/check")
     def check_runtime(body: CheckRequest, request: Request) -> dict:
         require_operator(request)
+        if settings.local_only and (body.target != "local" or
+                                    getattr(body, "frontier_mode", "off") != "off" or
+                                    getattr(body, "check_frontier_key", False)):
+            raise HTTPException(422, "Mode lokal hanya memakai Ollama di mesin ini; frontier dinonaktifkan.")
         endpoint = _normalized(body.target, body.colab_url)
         token, _keep, withheld = _token_plan(body.target, endpoint, body.token, body.reuse_saved_token)
         if not body.probe_gpu:
@@ -146,6 +151,10 @@ def register_runtime_routes(app, settings: Settings, store: RuntimeStore, active
     @router.post("/activate")
     def activate_runtime(body: ActivateRequest, request: Request) -> dict:
         require_operator(request)
+        if settings.local_only and (body.target != "local" or
+                                    getattr(body, "frontier_mode", "off") != "off" or
+                                    getattr(body, "check_frontier_key", False)):
+            raise HTTPException(422, "Mode lokal hanya memakai Ollama di mesin ini; frontier dinonaktifkan.")
         try:
             url = (normalize_endpoint("colab", body.colab_url, default_local=settings.ollama_local_url, **resolver_kw)
                    if body.target == "colab" else None)

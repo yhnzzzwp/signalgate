@@ -296,6 +296,7 @@ export interface RuntimeSnapshot {
 }
 
 export interface RuntimeConfig {
+  local_only?: boolean;
   state: {
     revision: number;
     target: RuntimeTarget | "env";

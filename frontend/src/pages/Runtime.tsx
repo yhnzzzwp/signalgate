@@ -122,10 +122,10 @@ export function Runtime() {
   function adopt(next: RuntimeConfig) {
     setConfig(next);
     const effective = next.effective;
-    setTarget(next.state.target === "env" ? (isLoopback(effective.ollama_url) ? "local" : "colab") : next.state.target);
+    setTarget(next.local_only ? "local" : next.state.target === "env" ? (isLoopback(effective.ollama_url) ? "local" : "colab") : next.state.target);
     setColabUrl(next.state.colab_url ?? (isLoopback(effective.ollama_url) ? "" : (effective.ollama_url ?? "")));
     setFrontierMode(
-      next.state.frontier_mode === "env"
+      next.local_only ? "off" : next.state.frontier_mode === "env"
         ? effective.frontier.enabled
           ? (effective.frontier.mode as RuntimeFrontierMode)
           : "off"
@@ -197,7 +197,7 @@ export function Runtime() {
   }
 
   const effective = config?.effective;
-  const keyConfigured = effective?.frontier.key_configured ?? false;
+  const keyConfigured = !config?.local_only && (effective?.frontier.key_configured ?? false);
   const typedHost = colabUrl.trim().replace(/\/+$/, "");
   // Token tersimpan hanya berlaku untuk host asalnya; host lain butuh token baru atau persetujuan eksplisit.
   const hostChanged =
@@ -258,7 +258,7 @@ export function Runtime() {
           <legend>Lokasi GPU</legend>
           {(["local", "colab"] as RuntimeTarget[]).map((option) => (
             <label key={option} className="runtime__choice">
-              <input type="radio" name="target" checked={target === option} onChange={() => setTarget(option)} />
+              <input type="radio" name="target" disabled={config?.local_only && option === "colab"} checked={target === option} onChange={() => setTarget(option)} />
               {TARGET_TEXT[option]}
             </label>
           ))}
@@ -319,7 +319,8 @@ export function Runtime() {
             </option>
           </select>
         </label>
-        {!keyConfigured && (
+        {config?.local_only && <p className="event-card__source-meta runtime__wide">Inferensi lokal aktif. Colab dan frontier dinonaktifkan.</p>}
+        {!keyConfigured && !config?.local_only && (
           <p className="event-card__source-meta runtime__wide">
             Shadow/escalation butuh <code>DEEPSEEK_API_KEY</code> di <code>backend/.env</code> lalu restart backend.
           </p>

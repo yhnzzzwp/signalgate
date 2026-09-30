@@ -238,6 +238,12 @@ def snapshot(settings: Settings, *, target: str, revision: int, token: str) -> d
 
 def resolve(base: Settings, store: RuntimeStore | None) -> Resolved:
     """Settings per run dari env + pilihan runtime. Salinan baru setiap kali: run lain tidak ikut berubah."""
+    if base.local_only:
+        local = base.model_copy(update={"ollama_base_url": "http://127.0.0.1:11434",
+                                        "ollama_local_url": "http://127.0.0.1:11434",
+                                        "ollama_auth_token": SecretStr(""),
+                                        "frontier_enabled": False})
+        return Resolved(local, snapshot(local, target="local", revision=0, token=""))
     state = store.state() if store is not None else RuntimeState()
     updates: dict = {}
     target = state.target or "env"

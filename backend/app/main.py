@@ -6,12 +6,13 @@ from threading import Event, Lock, Thread
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.api.routes import register_routes
 from app.api.runtime_routes import register_runtime_routes
 from app.api.workflow_routes import register_workflow_routes
-from app.config import frontier_config_issue, get_settings, sectors_block_reason
+from app.config import REPO_ROOT, frontier_config_issue, get_settings, sectors_block_reason
 from app.db.models import RunJobRecord
 from app.db.session import build_session_factory
 from app.llm.factory import build_provider
@@ -372,3 +373,9 @@ def _machine_free():
 
 
 register_runtime_routes(app, settings, runtime_store, _active_run, exclusive=_machine_free)
+
+
+# Register after API routes so missing API resources never shadow existing endpoints.
+_dashboard = REPO_ROOT / "frontend" / "dist"
+if (_dashboard / "index.html").is_file():
+    app.mount("/", StaticFiles(directory=_dashboard, html=True), name="dashboard")

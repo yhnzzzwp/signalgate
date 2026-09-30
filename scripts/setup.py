@@ -121,9 +121,11 @@ def step_env(profile: str, overwrite: bool) -> Path:
 def effective_models() -> list[str]:
     """Tanya aplikasinya sendiri model apa yang akan dipakai, supaya skrip ini tidak pernah basi."""
     script = (
-        "import json;from app.config import get_settings;s=get_settings();"
+        "import json;from app.config import get_settings;"
+        "from app.workflow.models import resolve_models,resolve_reviewers;s=get_settings();"
         "print(json.dumps({'backend':s.llm_backend,'models':[m for m in "
-        "[s.ollama_model,s.ollama_validator_model,*s.ollama_reviewer_models] if m]}))"
+        "[s.ollama_model,s.ollama_validator_model,*s.ollama_reviewer_models,"
+        "resolve_models(s)[0],*resolve_reviewers(s)] if m]}))"
     )
     raw = capture([str(venv_python()), "-c", script], cwd=BACKEND)
     if not raw:
@@ -147,13 +149,27 @@ def step_models(models: list[str], skip: bool) -> None:
     if not capture(["ollama", "list"]):
         die("Ollama terpasang tapi tidak merespons.", "Buka aplikasi Ollama (atau `ollama serve`) lalu ulangi.")
 
-    installed = capture(["ollama", "list"])
+    installed = {line.split()[0] for line in capture(["ollama", "list"]).splitlines()[1:] if line.strip()}
     for model in models:
-        if model in installed:
+        if model in installed or f"{model}:latest" in installed:
             say(OK, f"{model} sudah ada")
             continue
         say(OK, f"Mengunduh {model} ...")
         run(["ollama", "pull", model])
+
+
+def step_frontend(skip: bool) -> None:
+    if skip:
+        say(WARN, "Setup frontend dilewati.")
+        return
+    npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
+    if not npm:
+        die("Node.js/npm belum tersedia.", "Pasang Node.js 24 LTS lalu ulangi setup.")
+    frontend = REPO_ROOT / "frontend"
+    run([npm, "ci"], cwd=frontend)
+    run([npm, "run", "build"], cwd=frontend)
+    run([npm, "run", "lint"], cwd=frontend)
+    run([npm, "run", "test:render"], cwd=frontend)
 
 
 def step_tests(skip: bool) -> None:
@@ -186,7 +202,11 @@ Uji tanpa memakai satu pun kredit Sectors:
     cd backend{join}{activate}
     python -m app.scrapling_check --limit 1
 
-Menjalankan dashboard:
+Menjalankan satu layanan lokal (setelah build frontend):
+
+    cd backend{join}{activate}{join}python -m app.local
+
+Mode pengembangan:
 
     cd backend{join}{activate}{join}uvicorn app.main:app --reload
     cd frontend{join}npm install{join}{copy_env}{join}npm run dev
@@ -214,6 +234,7 @@ def main() -> None:
     parser.add_argument("--overwrite-env", action="store_true", help="timpa backend/.env yang sudah ada")
     parser.add_argument("--recreate-venv", action="store_true", help="hapus dan buat ulang .venv")
     parser.add_argument("--skip-models", action="store_true", help="jangan unduh model Ollama")
+    parser.add_argument("--skip-frontend", action="store_true", help="jangan pasang/build frontend")
     parser.add_argument("--skip-tests", action="store_true", help="jangan jalankan pytest")
     args = parser.parse_args()
 
@@ -224,6 +245,7 @@ def main() -> None:
     step_env(args.profile, args.overwrite_env)
     models = effective_models()
     step_models(models, args.skip_models)
+    step_frontend(args.skip_frontend)
     step_tests(args.skip_tests)
     report(args.profile, models)
 

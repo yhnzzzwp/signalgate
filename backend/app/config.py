@@ -21,8 +21,9 @@ PROFILES: dict[Profile, dict[str, object]] = {
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=REPO_ROOT / "backend" / ".env", extra="ignore")
 
+    local_only: bool = False
     signalgate_profile: Profile = "laptop"
     sectors_api_key: str = ""
     sectors_api_key_backups: list[str] = Field(default_factory=list)
@@ -75,7 +76,7 @@ class Settings(BaseSettings):
     research_source_urls: list[str] = Field(default_factory=list)
     research_cases_dir: Path = REPO_ROOT / "cases"
     scan_directory: Path = REPO_ROOT / "data" / "scans"
-    signalgate_db_path: str = "./signalgate.db"
+    signalgate_db_path: str = str(REPO_ROOT / "backend" / "signalgate.db")
 
     # --- Reviewer frontier (opsional, berbayar). Mati secara bawaan: tanpa ini perilaku lokal tidak berubah.
     frontier_enabled: bool = False
@@ -135,6 +136,10 @@ class Settings(BaseSettings):
         so a profile can raise the defaults for the other machine without ever overriding a value the
         operator wrote down. Explicit configuration always wins.
         """
+        if self.signalgate_db_path != ":memory:":
+            path = Path(self.signalgate_db_path).expanduser()
+            if not path.is_absolute():
+                self.signalgate_db_path = str(REPO_ROOT / "backend" / path)
         for field, value in PROFILES[self.signalgate_profile].items():
             if field not in self.model_fields_set:
                 setattr(self, field, value)

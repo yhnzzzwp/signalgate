@@ -147,6 +147,8 @@ export function Dashboard() {
   }, []);
 
   useEffect(() => {
+    // The callback awaits HTTP before updating state; this effect synchronizes external data.
+    // oxlint-disable-next-line react/set-state-in-effect
     void loadData(0, filter);
   }, [filter, loadData]);
 
