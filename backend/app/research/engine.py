@@ -18,11 +18,12 @@ from app.research.agents import AgentError
 from app.research.context import focus_terms, summarize_company_report
 from app.research.evidence import EvidenceStore
 from app.research.documents import DocumentSource
-from app.research.facts import apply_validation, locate_quote, verified_facts, compare_independent_facts
+from app.research.facts import (apply_validation, compare_independent_facts, locate_quote, short_use_hints,
+                                verified_facts)
 from app.research.models import Extraction, Fact, ResearchOutcome, Validation
 from app.research.scoring import MarketContext, compose_summary, decide, score_signals
 
-PROMPT_VERSION = "2026-09-16.documents-5"
+PROMPT_VERSION = "2026-09-28.roles-1"
 # Indonesian and "Go To English Page" variants of the IDX cover form, mapped to one set of keys.
 IDX_FORM_LABELS = {"Nomor Surat": "Nomor Surat", "Nama Perusahaan": "Nama Perusahaan", "Kode Emiten": "Kode Emiten",
                    "Lampiran": "Lampiran", "Perihal": "Perihal", "Letter / Announcement No.": "Nomor Surat",
@@ -41,7 +42,9 @@ EXTRACT_INSTRUCTION = (
     "Tugas: ekstrak fakta aksi korporasi ke JSON.\n"
     "- action_type: jenis aksi utama.\n"
     "- counterparties: HANYA pihak yang menyerap atau menerima saham baru atau dana, membeli atau menjual aset, atau "
-    "menyuntikkan aset. BUKAN pemegang saham yang terdilusi atau yang tidak menggunakan haknya. name wajib nama "
+    "menyuntikkan aset. BUKAN pemegang saham yang terdilusi atau yang tidak menggunakan haknya. BUKAN emiten itu "
+    "sendiri (nama atau kode sahamnya), BUKAN anak usaha yang menerima setoran modal dari emiten, dan BUKAN "
+    "perusahaan efek, penjamin emisi, penasihat, atau perantara yang hanya ditunjuk melaksanakan transaksi. name wajib nama "
     "badan atau orang yang spesifik seperti tertulis di evidence (contoh: 'PT Multi Sarana Nasional'), bukan istilah "
     "umum seperti 'pemegang saham lama'. relation: existing_shareholder (sudah pemegang saham sebelum aksi), "
     "affiliate (terafiliasi dengan pengendali), new_party (pihak baru), creditor (kreditur yang piutangnya "
@@ -49,12 +52,16 @@ EXTRACT_INSTRUCTION = (
     "- use_of_funds: core_expansion untuk belanja modal di bisnis yang sudah berjalan (menambah armada, kapasitas, "
     "pabrik, jaringan); new_business untuk masuk bidang usaha yang berbeda dari bisnis sebelumnya; debt_repayment "
     "untuk melunasi pinjaman; acquisition untuk membeli perusahaan lain; working_capital untuk modal kerja; unknown. "
-    "Satu kalimat boleh menghasilkan lebih dari satu kategori jika memang disebut.\n"
+    "core_expansion wajib menyebut belanja atau proyek yang konkret; kalimat umum seperti 'mendukung pertumbuhan' atau "
+    "'memperkuat struktur permodalan' tanpa rincian penggunaan dana adalah unknown. Satu kalimat boleh menghasilkan "
+    "lebih dari satu kategori jika memang disebut; untuk setiap kategori kutip kalimat atau klausa utuhnya, bukan "
+    "potongan dua kata.\n"
     "- business_change.present: true hanya jika evidence menyebut perusahaan pindah atau menambah bidang usaha "
     "yang berbeda dari bisnis sebelumnya.\n"
     "- old_business_divested.present: true hanya jika bisnis atau anak usaha lama dilepas.\n"
     "- asset_injection.present: true jika ada inbreng, penyetoran aset, pengambilalihan piutang, atau pembelian "
-    "aset atau saham dari pengendali atau pihak terafiliasinya. Ini BUKAN debt_repayment.\n"
+    "aset atau saham dari pengendali atau pihak terafiliasinya KE emiten. Ini BUKAN debt_repayment, dan setoran "
+    "modal emiten ke anak usahanya sendiri juga BUKAN asset_injection.\n"
     "Jika tidak ada bukti, pakai unknown atau present=false dengan quote dan evidence_id kosong. Jika ada "
     "previous_issues, perbaiki setiap poin di sana."
 )
@@ -108,6 +115,32 @@ def fact_lines(facts: list[Fact], issues: list[str]) -> list[str]:
     if issues:
         lines += ["", "Masalah:", *(f"- {issue}" for issue in issues)]
     return lines
+
+
+def issuer_name_in(text: str, ticker: str) -> str | None:
+    """Nama emiten yang ditulis tepat sebelum kodenya: "PT X Tbk (ABCD)" maupun "PT X Tbk. (ABCD)"."""
+    match = re.search(r"(PT[^\n.;]{3,120}?\bTbk)\.?\s*\(" + re.escape(ticker) + r"\)", text, re.I)
+    return match.group(1) if match else None
+
+
+def unverified_uses(claimed: list[Fact], scored: list[Fact]) -> frozenset[str]:
+    """Kategori penggunaan dana yang diklaim analis tetapi tidak lolos validasi."""
+    kept = {fact.value for fact in scored if fact.topic == "use_of_funds"}
+    return frozenset(fact.value for fact in claimed if fact.topic == "use_of_funds") - kept
+
+
+def document_issues(document_status: str, failures: list[dict], needs_ocr: list[str]) -> list[str]:
+    """Alasan dokumen tidak siap, dibedakan per penyebab: akses ditolak bukan kebutuhan OCR."""
+    pdf_failures = [failure for failure in failures if ".pdf" in failure.get("url", "").lower()]
+    issues = [f"PDF tidak dapat diambil ({failure['error'].rstrip('.')}): {failure['url']}" for failure in pdf_failures]
+    if any("robots.txt" in failure["error"] for failure in pdf_failures):
+        issues.append("Sumber menolak akses otomatis; unggah dokumennya sendiri atau buka lewat jalur yang diizinkan. "
+                      "SignalGate tidak melewati robots.txt.")
+    if needs_ocr:
+        issues.append(f"PDF terbaca tetapi banyak halaman minim teks; perlu OCR atau pemeriksaan: {', '.join(needs_ocr)}")
+    elif document_status == "pdf_missing_or_unrelated" and not pdf_failures:
+        issues.append("Tidak ada PDF yang terbukti milik ticker ini di tiga halaman awalnya.")
+    return issues or ["PDF terkait ticker belum tersedia atau memerlukan pemeriksaan/OCR."]
 
 
 class ResearchEngine:
@@ -267,16 +300,13 @@ class ResearchEngine:
                            any(report.get(k) for k in ("overview", "valuation", "ownership", "financials"))))
         issuer_names = [event.ticker, company_name]
         if not company_name:
-            for item in store.items:
-                match = re.search(r"(PT[^\n.;]{3,120}?\bTbk)\s*\(" + re.escape(event.ticker) + r"\)", item.text, re.I)
-                if match:
-                    issuer_names.append(match.group(1))
+            issuer_names += [name for item in store.items if (name := issuer_name_in(item.text, event.ticker))]
         if require_sectors and not has_sectors:
             status, facts, issues, attempts, draft_label, validation = (
                 "missing_sectors_data", [], ["Data perusahaan Sectors tidak tersedia; key saja tidak cukup."], 0, None, None)
         elif require_pdf and document_status != "ready_text":
             status, facts, issues, attempts, draft_label, validation = (
-                "needs_document", [], ["PDF terkait ticker belum tersedia atau memerlukan pemeriksaan/OCR."], 0, None, None)
+                "needs_document", [], document_issues(document_status, store.failures, pdf_warnings), 0, None, None)
         elif not any(item.kind != "input" for item in store.items):
             # Quotes from the candidate input can never be verified, so a model call would only burn GPU time.
             status, facts, issues, attempts, draft_label, validation = (
@@ -289,7 +319,8 @@ class ResearchEngine:
 
         # Lenient mode can retain uncertain facts for inspection, never for a published score.
         scored_facts = [fact for fact in facts if fact.validator_status == "supported"]
-        signals = score_signals(context, scored_facts)
+        claimed = (self._review_detail or {}).get("facts") or facts
+        signals = score_signals(context, scored_facts, unverified_uses(claimed, scored_facts))
         label, confidence = decide(signals)
         if validation is not None and (label != draft_label or not validation.agrees_with_label):
             issues.append("Perbedaan pembacaan independen menurunkan hasil ke inconclusive.")
@@ -396,7 +427,7 @@ class ResearchEngine:
                 self._offload(reviewer, role)
                 store.write(f"{prefix}reviewers/{reviewer_no:02}/extraction.json", independent)
                 independent_facts, independent_issues = verified_facts(independent, store, issuer_names)
-                check = compare_independent_facts(facts, independent_facts)
+                check = compare_independent_facts(facts, independent_facts, short_use_hints(independent, store))
                 independent_label, _ = decide(score_signals(context, independent_facts))
                 check.agrees_with_label = independent_label == draft_label
                 check.issues = independent_issues[:6]
@@ -440,9 +471,10 @@ class ResearchEngine:
     # -- reviewer frontier ------------------------------------------------------------------------
 
     @staticmethod
-    def _published_label(context, kept, draft_label, agrees, status) -> str:
+    def _published_label(context, kept, draft_label, agrees, status, claimed=()) -> str:
         """Label yang akan terbit menurut aturan research(): Python dari fakta, turun bila ada perbedaan."""
-        label, _ = decide(score_signals(context, [fact for fact in kept if fact.validator_status == "supported"]))
+        scored = [fact for fact in kept if fact.validator_status == "supported"]
+        label, _ = decide(score_signals(context, scored, unverified_uses(claimed, scored)))
         if status != "completed" or label != draft_label or not agrees:
             return VerdictLabel.inconclusive.value
         return label.value
@@ -475,7 +507,10 @@ class ResearchEngine:
                 claims.append({"claim_id": fact.id, "topik": fact.topic, "nilai": fact.value, "pihak": fact.claim,
                                "kutipan": fact.quote, "evidence_id": fact.evidence_id, "asal": "analis"})
         flags = [validation_i.agrees_with_label for validation_i in validations]
-        label_conflict = len(set(flags)) > 1
+        # Dua pembanding bisa sama-sama tidak setuju dengan analis sambil saling bertentangan
+        # (SRAJ: structural_red_flag vs growth_catalyst). Yang dibandingkan labelnya, bukan hanya flag.
+        labels = [check["independent_label"] for check in checks]
+        label_conflict = len(set(flags)) > 1 or len(set(labels)) > 1
         extras = []
         if label_conflict:
             triggers.append({"claim_id": None, "reason": "label_conflict"})
@@ -536,8 +571,8 @@ class ResearchEngine:
             extra_final[extra_id] = decision
         if all(flags):
             agrees = True
-        elif not any(flags):
-            agrees = False
+        elif not label_conflict:
+            agrees = False  # pembanding sepakat menolak label analis: frontier tidak membalik mayoritas lokal
         else:
             # Konflik label hanya dianggap selesai bila frontier benar-benar memutus setiap sumber bedanya:
             # semua fakta yang dipersengketakan (R3) dan semua fakta tambahan pembanding ditolak (R3).
@@ -551,8 +586,8 @@ class ResearchEngine:
         new_kept, new_issues = apply_validation(facts, resolved, strict)
         new_status = ("completed" if new_kept and all(fact.validator_status == "supported" for fact in new_kept)
                       and agrees else "needs_review")
-        local_label = self._published_label(context, kept, draft_label, validation.agrees_with_label, status)
-        frontier_label = self._published_label(context, new_kept, draft_label, agrees, new_status)
+        local_label = self._published_label(context, kept, draft_label, validation.agrees_with_label, status, facts)
+        frontier_label = self._published_label(context, new_kept, draft_label, agrees, new_status, facts)
         record["reconciliation"] = reconciliation
         record["local_outcome"] = {"status": status, "label": local_label,
                                    "agrees_with_label": validation.agrees_with_label}

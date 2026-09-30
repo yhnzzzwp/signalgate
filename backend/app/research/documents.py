@@ -12,7 +12,9 @@ from urllib.parse import urldefrag, urljoin, urlsplit
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
-from app.research.evidence import ScraplingSource
+from app.research.evidence import HTML_EXTRACTOR_VERSION, ScraplingSource, main_text
+
+PDF_EXTRACTOR_VERSION = 'html-pdf-v1'
 
 
 class Link(BaseModel):
@@ -121,7 +123,11 @@ class DocumentSource:
         if self.mode != 'refresh' and index.exists():
             try:
                 cached = Document.model_validate_json(index.read_text())
-                if cached.extractor_version != 'html-pdf-v1':
+                if cached.format == 'html' and cached.extractor_version != HTML_EXTRACTOR_VERSION:
+                    # Tidak perlu jaringan: HTML mentahnya tersimpan. Ekstraksi lama tetap ada di objects/.
+                    cached = self._reextract_html(cached)
+                    self._write_index(index, cached)
+                elif cached.format == 'pdf' and cached.extractor_version != PDF_EXTRACTOR_VERSION:
                     raise ValueError('Versi ekstraksi snapshot tidak cocok.')
                 if cached.format == 'pdf' and len(cached.pages) > self.max_pdf_pages:
                     raise ValueError('PDF cache melebihi batas halaman saat ini.')
@@ -149,8 +155,7 @@ class DocumentSource:
                 raise ValueError('Format sumber belum didukung; gunakan HTML atau PDF.')
             if len(body) > 2_000_000:
                 raise ValueError('HTML melebihi batas 2 MB.')
-            nodes = page.css('article') or page.css('main') or page.css('body')
-            text = '\n'.join(node.get_all_text(strip=True, ignore_tags=('script', 'style', 'nav', 'footer')) for node in nodes)
+            text = main_text(page)
             if len(text.strip()) < 80:
                 raise ValueError('Halaman minim teks atau membutuhkan JavaScript.')
             links, seen = [], set()
@@ -162,7 +167,8 @@ class DocumentSource:
             warnings = []
             if len(text) > 150000:
                 raise ValueError('HTML melebihi batas ekstraksi; gunakan halaman artikel spesifik.')
-            document = Document(url=final_url, title=page.css('title::text').get() or final_url, format='html',
+            document = Document(extractor_version=HTML_EXTRACTOR_VERSION,
+                                url=final_url, title=page.css('title::text').get() or final_url, format='html',
                                 sha256=digest, fetched_at=now, pages=[{'number':None, 'text':text}],
                                 links=links, warnings=warnings,
                                 published_at=published_date(body.decode('utf-8', 'ignore'), final_url))
@@ -176,11 +182,29 @@ class DocumentSource:
         metadata = raw.with_suffix('.json')
         if not metadata.exists():
             metadata.write_text(document.model_dump_json(indent=2))
+        self._write_index(index, document)
+        return document
+
+    @staticmethod
+    def _write_index(index: Path, document: Document) -> None:
         index.parent.mkdir(parents=True, exist_ok=True)
         temporary = index.with_suffix('.tmp')
         temporary.write_text(document.model_dump_json(indent=2))
         temporary.replace(index)
-        return document
+
+    def _reextract_html(self, document: Document) -> Document:
+        from scrapling.parser import Selector
+
+        raw = self.directory / 'objects' / f'{document.sha256}.html'
+        try:
+            html = raw.read_text(encoding='utf-8', errors='ignore')
+        except OSError:
+            raise ValueError('HTML mentah snapshot lama tidak ada; ekstraksi versi baru butuh ambil ulang.') from None
+        text = main_text(Selector(html))
+        if len(text.strip()) < 80:
+            raise ValueError('Halaman minim teks atau membutuhkan JavaScript.')
+        return document.model_copy(update={'extractor_version': HTML_EXTRACTOR_VERSION,
+                                           'pages': [{'number': None, 'text': text}]})
 
     def _with_published_date(self, document: Document) -> Document:
         """Snapshot lama belum menyimpan tanggal terbit; HTML aslinya masih ada, jadi dibaca ulang."""

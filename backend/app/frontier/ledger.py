@@ -43,9 +43,12 @@ CREATE INDEX IF NOT EXISTS frontier_calls_job ON frontier_calls(job_key, status)
 
 # Biaya/token yang dihitung ke batas per status baris.
 CHARGED_TOKENS = ("CASE status WHEN 'settled' THEN COALESCE(actual_tokens, reserved_tokens) "
-                  "WHEN 'released' THEN 0 ELSE reserved_tokens END")
+                  "WHEN 'released' THEN 0 WHEN 'not_sent' THEN 0 ELSE reserved_tokens END")
 CHARGED_USD = ("CASE status WHEN 'settled' THEN COALESCE(actual_usd, reserved_usd) "
-               "WHEN 'released' THEN 0 ELSE reserved_usd END")
+               "WHEN 'released' THEN 0 WHEN 'not_sent' THEN 0 ELSE reserved_usd END")
+# `not_sent`: koneksi ke provider tidak pernah terbentuk. Tetap dicatat untuk audit, tetapi tidak memakan
+# jatah panggilan per run: jaringan yang putus-sambung tidak boleh mengunci kandidat dari frontier selamanya.
+COUNTED_CALLS = "SUM(CASE WHEN status='not_sent' THEN 0 ELSE 1 END)"
 
 
 @dataclass(frozen=True)
@@ -113,7 +116,8 @@ class BudgetLedger:
                     return Denied("overshoot", "Pemakaian aktual pernah melebihi reservasi pada run ini; panggilan "
                                                "berikutnya dihentikan karena batas berbasis estimasi terbukti kurang.")
                 calls, run_tokens, run_usd = connection.execute(
-                    f"SELECT COUNT(*), COALESCE(SUM({CHARGED_TOKENS}), 0), COALESCE(SUM({CHARGED_USD}), 0) "
+                    f"SELECT COALESCE({COUNTED_CALLS}, 0), COALESCE(SUM({CHARGED_TOKENS}), 0), "
+                    f"COALESCE(SUM({CHARGED_USD}), 0) "
                     "FROM frontier_calls WHERE run_key=?", (run_key,)).fetchone()
                 (day_usd,) = connection.execute(
                     f"SELECT COALESCE(SUM({CHARGED_USD}), 0) FROM frontier_calls WHERE day=?",
@@ -171,9 +175,10 @@ class BudgetLedger:
         self._update(reservation, "settled", int(tokens), float(usd), note, overshoot)
         return overshoot
 
-    def release(self, reservation: Reservation, note: str) -> None:
-        """Provider menolak sebelum memproses (mis. 401/429/koneksi gagal): tidak ada biaya, panggilan tetap dihitung."""
-        self._update(reservation, "released", 0, 0.0, note)
+    def release(self, reservation: Reservation, note: str, *, sent: bool = True) -> None:
+        """Provider menolak sebelum memproses (mis. 401/429): tidak ada biaya, panggilan tetap dihitung.
+        `sent=False` (koneksi tidak pernah terbentuk): tidak ada biaya dan tidak dihitung sebagai panggilan."""
+        self._update(reservation, "released" if sent else "not_sent", 0, 0.0, note)
 
     def mark_unknown(self, reservation: Reservation, note: str) -> None:
         self._update(reservation, "unknown", note=note)

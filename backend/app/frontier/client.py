@@ -49,6 +49,12 @@ class FrontierCallError(Exception):
     usage: dict | None = None
     finish_reason: str | None = None
     request_id: str | None = None
+    # connect | pool | write | read: fase tempat request gagal. connect/pool = request belum terkirim.
+    phase: str | None = None
+
+    @property
+    def sent(self) -> bool:
+        return self.phase not in {"connect", "pool"}
 
     def __str__(self) -> str:
         return f"{self.kind}: {self.message}"
@@ -100,7 +106,12 @@ class DeepSeekClient:
         self.reasoning_effort = reasoning_effort
         self.max_tokens = max_tokens
         self.timeout = timeout
-        self._client = httpx.Client(timeout=httpx.Timeout(timeout, connect=min(15.0, timeout)), transport=transport)
+        self.connect_timeout = min(15.0, timeout)
+        self._client = httpx.Client(timeout=httpx.Timeout(timeout, connect=self.connect_timeout), transport=transport)
+
+    @property
+    def host(self) -> str:
+        return httpx.URL(self.base_url).host or self.base_url
 
     def __repr__(self) -> str:  # jangan pernah memuat key
         return f"DeepSeekClient(model={self.model!r}, base_url={self.base_url!r})"
@@ -144,6 +155,8 @@ class DeepSeekClient:
             result["models"] = [str(item.get("id")) for item in models]
             result["model_available"] = self.model in result["models"]
             result["model_name"] = next((item.get("name") for item in models if item.get("id") == self.model), None)
+        except httpx.ConnectTimeout:
+            result["error"] = f"Cek akun gagal: tidak tersambung ke {self.host} dalam 15 detik (fase koneksi)."
         except (httpx.HTTPError, ValueError, AttributeError, TypeError) as error:
             result["error"] = redact(f"Cek akun gagal: {type(error).__name__}", self.secrets)
         return result
@@ -156,14 +169,27 @@ class DeepSeekClient:
             response = self._client.post(f"{self.base_url}/chat/completions", json=self.request_body(system, user),
                                          headers={"Authorization": f"Bearer {self._api_key}",
                                                   "Content-Type": "application/json"})
+        except httpx.ConnectTimeout:
+            # Batas koneksi (TCP+TLS) 15 detik, bukan batas jawaban 180 detik: request belum terkirim.
+            raise FrontierCallError("connect_timeout", f"Tidak tersambung ke {self.host} dalam "
+                                    f"{self.connect_timeout:.0f} detik (fase koneksi); request belum terkirim. "
+                                    "Periksa jaringan, VPN, atau firewall.", transient=True, billed="no",
+                                    phase="connect") from None
         except httpx.ConnectError:
             # Koneksi tidak terbentuk: request belum sampai ke provider.
-            raise FrontierCallError("network", "Tidak bisa terhubung ke API frontier.", transient=True,
-                                    billed="no") from None
+            raise FrontierCallError("network", f"Tidak bisa terhubung ke {self.host} (fase koneksi); request belum "
+                                    "terkirim.", transient=True, billed="no", phase="connect") from None
+        except httpx.PoolTimeout:
+            raise FrontierCallError("pool_timeout", "Antrean koneksi lokal penuh; request belum terkirim.",
+                                    transient=True, billed="no", phase="pool") from None
+        except httpx.WriteTimeout:
+            raise FrontierCallError("write_timeout", f"Pengiriman request ke {self.host} terhenti (fase kirim); "
+                                    "provider mungkin sudah menerima sebagian.", transient=True, billed="unknown",
+                                    phase="write") from None
         except httpx.TimeoutException:
-            # Request mungkin sudah diterima dan diproses; usage tidak diketahui, jadi biaya tidak dianggap nol.
-            raise FrontierCallError("timeout", f"Tidak ada jawaban dalam {self.timeout:.0f} detik.", transient=True,
-                                    billed="unknown") from None
+            # Request sudah terkirim dan mungkin sedang diproses; usage tidak diketahui, jadi biaya tidak dianggap nol.
+            raise FrontierCallError("timeout", f"Request terkirim tetapi tidak ada jawaban dalam {self.timeout:.0f} "
+                                    "detik (fase baca).", transient=True, billed="unknown", phase="read") from None
         except httpx.HTTPError as error:
             raise FrontierCallError("network", redact(f"Transport gagal: {type(error).__name__}", self.secrets),
                                     transient=True, billed="unknown") from None
