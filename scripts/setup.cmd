@@ -9,14 +9,12 @@ set "SCRIPT=%~dp0setup.py"
 
 py -3 --version >nul 2>&1
 if not errorlevel 1 (
-    py -3 "%SCRIPT%" %*
-    exit /b %errorlevel%
+    goto use_py
 )
 
 python --version >nul 2>&1
 if not errorlevel 1 (
-    python "%SCRIPT%" %*
-    exit /b %errorlevel%
+    goto use_python
 )
 
 echo.
@@ -33,3 +31,11 @@ echo     Settings ^> Apps ^> Advanced app settings ^> App execution aliases
 echo dan matikan entri python.exe serta python3.exe.
 echo.
 exit /b 1
+
+:use_py
+py -3 "%SCRIPT%" %*
+exit /b %errorlevel%
+
+:use_python
+python "%SCRIPT%" %*
+exit /b %errorlevel%

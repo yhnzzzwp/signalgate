@@ -2,111 +2,81 @@
 
 ## Prasyarat
 
-- Python 3.11–3.13, Node.js 24, Git, dan Ollama yang sudah berjalan.
-- Koneksi internet untuk instalasi serta mengambil berita/data baru. Model dijalankan di mesin sendiri.
-- Profil `workstation`: `qwen2.5:14b`, `glm4:9b`, `gemma3:12b`, dijalankan bergantian. Gunakan profil ini untuk konfigurasi tiga model proyek; sesuaikan dengan memori perangkat.
-- Profil `laptop`: `qwen2.5:7b`. Untuk pembanding independen, tambahkan `OLLAMA_VALIDATOR_MODEL=qwen3:4b` di `backend/.env`, lalu jalankan setup lagi. Tanpa pembanding, sebagian klaim laporan tidak dapat diverifikasi.
+Windows, Linux, atau macOS dengan **Python 3.11–3.13**, **Node.js 24**, Git, dan **Ollama**. Buka Ollama atau jalankan `ollama serve` sebelum setup. CPU didukung; GPU yang didukung Ollama mempercepat inferensi. Kecepatan dan model yang muat bergantung pada RAM/VRAM perangkat.
 
-## Instalasi
+| Profil | Model | Penggunaan |
+|---|---|---|
+| `laptop` | `qwen2.5:7b` | Perangkat dengan memori terbatas; konfigurasi awal yang lebih ringan |
+| `workstation` | `qwen2.5:14b`, `glm4:9b`, `gemma3:12b` | Analisis dengan dua pembanding, dimuat bergantian |
 
-Dari folder repository, macOS/Linux:
+Untuk pembanding independen pada profil laptop, tambahkan `OLLAMA_VALIDATOR_MODEL=qwen3:4b` di `backend/.env` lalu ulangi setup. Tanpa pembanding, sebagian klaim laporan tidak dapat diverifikasi.
 
-```bash
-python3 scripts/setup.py --profile workstation
-```
+## Instalasi dan menjalankan
 
-Windows:
+Dari folder repository:
 
-```bat
-scripts\setup.cmd --profile workstation
-```
-
-Setup membuat `backend/.venv`, memasang dependensi, menyiapkan `.env`, mengunduh model yang belum ada, membangun frontend, dan menjalankan tes. `.env` lama tetap dipertahankan; `--profile` berlaku untuk file baru. Untuk mengganti profil instalasi lama, edit `SIGNALGATE_PROFILE` di `backend/.env` dan hapus override model yang tidak dibutuhkan.
-
-Pilihan: `--skip-models`, `--skip-tests`, `--skip-frontend`. `--overwrite-env` mengganti konfigurasi lama; gunakan hanya jika memang ingin meresetnya.
-
-## Jalankan lokal
-
-macOS/Linux:
-
-```bash
-cd backend
-.venv/bin/python -m app.local
-```
-
-Windows:
+**Windows (PowerShell atau Command Prompt)**
 
 ```bat
-cd backend
-.venv\Scripts\python -m app.local
+scripts\setup.cmd --profile laptop
+py -3 run.py
 ```
 
-Buka **http://127.0.0.1:8000**. Dashboard dan API dilayani dalam satu proses tanpa development server. Hentikan dengan `Ctrl+C`.
+**Linux / macOS**
 
-Perintah ini memeriksa model sebelum startup, selalu memakai Ollama `127.0.0.1:11434`, dan menonaktifkan frontier/cloud meskipun konfigurasi runtime lama menunjuk Colab atau DeepSeek. Pemilihan Colab/frontier ditolak selama mode ini aktif. Kredensial yang sudah tersimpan tidak dihapus. Gunakan satu proses backend: kunci job dan progres SSE berada di proses tersebut.
+```bash
+python3 scripts/setup.py --profile laptop
+python3 run.py
+```
 
-Di tab **Runtime & GPU**, gunakan **Cek kesiapan** dengan lokasi lokal. Tombol pembuktian GPU melakukan inferensi singkat. `ollama ps` menunjukkan penempatan model pada CPU/GPU; kecepatan dan kebutuhan memori tergantung perangkat.
+Ganti `laptop` dengan `workstation` jika sesuai perangkat. Setup memasang backend, mengunduh model yang belum tersedia, membangun dashboard, dan menjalankan tes backend. `.env` yang sudah ada tetap dipertahankan; edit `SIGNALGATE_PROFILE` di file itu untuk mengganti profil instalasi lama.
 
-## Data dan konfigurasi
+Buka **http://127.0.0.1:8000**. Dashboard dan API berjalan dalam satu proses lokal. Hentikan dengan `Ctrl+C`. Launcher memilih interpreter `.venv` sesuai OS, sehingga tidak perlu mengaktifkan environment atau mengubah kebijakan PowerShell. Path yang mengandung spasi didukung.
 
-`backend/.env` adalah konfigurasi backend. Instalasi baru memakai `SECTORS_API_ENABLED=false`; **Scan Scrapling (tanpa API)** mengambil berita publik tanpa kredit Sectors. Situs sumber tetap membutuhkan internet dan dapat membatasi akses.
+Cek kesiapan tanpa menjalankan server: `python3 run.py --check` (Windows: `py -3 run.py --check`). Tab **Runtime & GPU** memeriksa model dan penempatan CPU/GPU. Probe melepas model setelah pemeriksaan.
 
-Untuk pipeline Sectors dan laporan emiten dengan data baru:
+## Konfigurasi
+
+`backend/.env` menyimpan konfigurasi. Inferensi memakai Ollama lokal; URL loopback dapat diubah dengan `OLLAMA_LOCAL_URL=http://127.0.0.1:11434`. Pengaturan remote lama diabaikan dan kredensialnya tidak dikirim. Launcher menonaktifkan frontier berbayar.
+
+Model mengikuti `SIGNALGATE_PROFILE`. Override tersedia lewat `OLLAMA_MODEL`, `OLLAMA_REVIEWER_MODELS`, `WORKFLOW_ANALYST_MODEL`, dan `WORKFLOW_REVIEWER_MODELS`. Nama harus cocok dengan `ollama list`. Jangan mengisi `OLLAMA_REVIEWER_MODELS` dan `OLLAMA_VALIDATOR_MODEL` bersamaan. Pertahankan `OLLAMA_OFFLOAD_BETWEEN_MODELS=true` agar model bergantian memakai memori.
+
+Instalasi baru menonaktifkan Sectors. **Scan Scrapling (tanpa API)** mengambil berita publik tanpa kredit Sectors, tetapi tetap membutuhkan internet. Untuk pipeline dan laporan dengan data Sectors baru:
 
 ```dotenv
 SECTORS_API_ENABLED=true
 SECTORS_API_KEY=isi_key_anda
 ```
 
-Restart backend setelah mengedit `.env`. Panggilan Sectors memakai kuota akun. Replay laporan memakai snapshot tersimpan. Inferensi tetap lokal pada `app.local`.
+Restart aplikasi setelah mengedit konfigurasi. Pengambilan data Sectors memakai kuota akun; replay memakai snapshot tersimpan. Inferensi model tetap lokal.
 
-Model mengikuti `SIGNALGATE_PROFILE`; override `OLLAMA_MODEL` dan `OLLAMA_REVIEWER_MODELS` harus menunjuk nama persis dari `ollama list`. Jangan mengisi `OLLAMA_REVIEWER_MODELS` bersamaan dengan `OLLAMA_VALIDATOR_MODEL`. Override laporan tersedia melalui `WORKFLOW_ANALYST_MODEL` dan `WORKFLOW_REVIEWER_MODELS`.
+Data tersimpan di `backend/signalgate.db`, `cases/`, dan `data/`. Path database relatif dihitung dari folder `backend`. Cadangkan saat aplikasi berhenti. `.env`, cache, database, dan `.local-archive/` diabaikan Git. Jangan menaruh API key di variabel frontend `VITE_*`.
 
-Data tersimpan di `backend/signalgate.db`, `cases/`, dan `data/`. Path SQLite relatif selalu dihitung dari folder `backend`. Cadangkan data tersebut saat backend berhenti. File `.env`, database, cache, dan arsip lokal tidak dimasukkan ke Git. Jangan menaruh API key pada variabel `VITE_*`.
+## Pengujian dan pengembangan
 
-## Pengembangan dan pengujian
-
-Backend (terminal pertama):
+Dari folder repository, macOS/Linux:
 
 ```bash
-cd backend
-.venv/bin/python -m uvicorn app.main:app --reload --host 127.0.0.1
+backend/.venv/bin/python -m pytest backend/tests -q
+npm --prefix frontend run build
+npm --prefix frontend run lint
+npm --prefix frontend run test:render
 ```
 
-Frontend (terminal kedua):
+Di Windows gunakan `backend\.venv\Scripts\python` untuk perintah tes Python. Tes tidak menggunakan model atau API berbayar; tes startup memakai server Ollama palsu pada loopback. Audit arsip dilewati jika `cases/` kosong, dan tes `cmd.exe` khusus Windows dilewati pada OS lain.
 
-```bash
-cd frontend
-npm ci
-npm run dev
-```
+Workflow GitHub Actions menguji Windows, Ubuntu, dan macOS dengan Python 3.11 serta 3.13. Workflow baru berjalan setelah perubahan dipush; konfigurasi matrix bukan bukti bahwa semua OS sudah lolos. Pengujian model/GPU nyata tetap perlu dilakukan pada perangkat tujuan.
 
-Buka http://localhost:5173. Mode pengembangan mengikuti pengaturan runtime yang tersimpan; gunakan `app.local` untuk membatasi inferensi ke mesin ini. Frontend produksi memakai API satu origin; `VITE_API_BASE_URL` hanya digunakan saat pengembangan.
-
-Tes backend:
-
-```bash
-cd backend
-.venv/bin/python -m pytest -q
-```
-
-Pemeriksaan frontend:
-
-```bash
-cd frontend
-npm run build
-npm run lint
-npm run test:render
-```
-
-Di Windows, ganti `.venv/bin/python` dengan `.venv\Scripts\python`. Tes memakai model/HTTP palsu; beberapa tes gateway membuka port loopback lokal. Satu tes audit arsip dilewati bila `cases/` belum berisi hasil analisis nyata. Pengujian inferensi nyata dilakukan terpisah lewat cek kesiapan atau analisis.
+Untuk pengembangan, jalankan `python -m uvicorn app.main:app --reload --host 127.0.0.1` dari `backend` dengan interpreter `.venv`, lalu `npm run dev` dari `frontend`. Buka http://localhost:5173. Setelah perubahan frontend, ulangi build sebelum menjalankan launcher produksi.
 
 ## Jika gagal
 
-- **Ollama tidak bisa dihubungi:** buka aplikasi Ollama atau jalankan `ollama serve`.
-- **Model belum diunduh:** jalankan `ollama pull nama:model` sesuai pesan startup, atau ulangi setup.
-- **Dashboard belum dibangun:** jalankan `npm ci` dan `npm run build` dari folder `frontend`.
-- **Port 8000 terpakai:** hentikan proses SignalGate lama sebelum memulai yang baru.
-- **Memori kurang/timeout:** gunakan profil lebih kecil, kurangi `OLLAMA_NUM_CTX`, dan pertahankan `OLLAMA_OFFLOAD_BETWEEN_MODELS=true`.
-- **Sectors ditolak:** periksa flag aktif, key, kuota, dan koneksi. Jalur Scrapling tidak membutuhkan key.
-- **Hasil inconclusive:** periksa bukti dan status pembanding pada audit; sumber tidak terbaca atau klaim tidak terverifikasi bukan hasil sukses.
+- **Ollama tidak terhubung:** buka aplikasinya atau jalankan `ollama serve`.
+- **Model belum tersedia:** `ollama pull nama:model`, atau ulangi setup.
+- **Memori kurang:** gunakan profil laptop dan kurangi `OLLAMA_NUM_CTX`. GPU bukan syarat startup.
+- **Environment rusak setelah pindah OS/folder:** ulangi setup dengan `--recreate-venv`. Jangan menyalin `.venv` atau `node_modules` antarperangkat.
+- **Port 8000 terpakai:** hentikan instance SignalGate sebelumnya.
+- **Dashboard belum dibangun:** `npm --prefix frontend ci`, lalu `npm --prefix frontend run build`.
+- **Node terlalu lama:** pasang Node.js 24, buka terminal baru, lalu ulangi setup.
+
+Opsi setup: `--skip-models`, `--skip-frontend`, `--skip-tests`. `--overwrite-env` mereset `.env`; gunakan hanya jika memang diperlukan.

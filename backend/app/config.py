@@ -32,9 +32,9 @@ class Settings(BaseSettings):
     # Endpoint dari env. Setelah lokasi GPU diaktifkan dari dashboard (app/runtime.py), pilihan runtime
     # itulah yang dipakai untuk run berikutnya; env tetap jadi bawaan selama belum pernah diaktifkan.
     ollama_base_url: str = "http://127.0.0.1:11434"
-    # Ollama di mesin ini (MacBook). Dipakai saat target runtime = "local".
+    # Ollama di perangkat ini (Windows/Linux/macOS). Dipakai saat target runtime = "local".
     ollama_local_url: str = "http://127.0.0.1:11434"
-    # Token gateway Colab (Authorization: Bearer). Token yang ditempel di dashboard lebih diutamakan.
+    # Token klien lama; runtime lokal tidak meneruskannya.
     ollama_auth_token: SecretStr = SecretStr("")
     ollama_model: str = "qwen2.5:7b"
     ollama_validator_model: str | None = None
@@ -119,7 +119,7 @@ class Settings(BaseSettings):
     # tidak dikirim. Sekaligus membatasi reservasi biaya input per panggilan.
     frontier_max_input_chars: int = Field(default=24_000, ge=4_000, le=400_000)
     frontier_directory: Path = REPO_ROOT / "data" / "frontier"
-    # Pilihan lokasi GPU dan mode frontier dari dashboard (config.json) + token Colab (secrets.json, 0600).
+    # Pengaturan runtime lokal dari dashboard.
     runtime_directory: Path = REPO_ROOT / "data" / "runtime"
 
     @property

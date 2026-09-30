@@ -191,7 +191,7 @@ export function WorkflowPanels({ report }: { report: WorkflowReport }) {
           </p>
           {report.runtime?.bound && (
             <p className="event-card__source-meta">
-              Inferensi: {report.runtime.bound.target === "colab" ? "GPU Colab" : report.runtime.bound.target === "local" ? "MacBook" : "env"} ·{" "}
+              Inferensi: {report.runtime.bound.target === "local" ? "Perangkat lokal" : "Runtime lama"} ·{" "}
               {report.runtime.bound.ollama_url ?? "-"} · frontier{" "}
               {report.runtime.bound.frontier.enabled ? report.runtime.bound.frontier.mode : "mati"}
               {report.runtime.history.length > 1 && ` · ${report.runtime.history.length - 1}x resume`}

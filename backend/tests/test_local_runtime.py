@@ -19,22 +19,22 @@ def test_relative_database_is_independent_of_working_directory(tmp_path, monkeyp
 
 def test_local_runtime_overrides_saved_cloud_without_changing_it(tmp_path):
     store = RuntimeStore(tmp_path)
-    store.save(target="colab", colab_url="https://example.com", frontier_mode="escalation", token=None, ready=True)
+    store.config_path.write_text('{"target":"retired-remote","frontier_mode":"escalation"}')
     base = Settings(_env_file=None, local_only=True, frontier_enabled=True,
                     ollama_base_url="https://example.com", ollama_auth_token="private-token")
     effective = resolve(base, store)
     assert effective.settings.ollama_base_url == "http://127.0.0.1:11434"
     assert not effective.settings.frontier_enabled
     assert not effective.settings.ollama_auth_token.get_secret_value()
-    assert store.state().target == "colab"
+    assert "retired-remote" in store.config_path.read_text()
     assert base.frontier_enabled
 
 
 @pytest.mark.parametrize("path,body", [
-    ("check", {"target": "colab", "colab_url": "https://example.com"}),
+    ("check", {"target": "remote", "remote_url": "https://example.com"}),
     ("check", {"target": "local", "check_frontier_key": True}),
     ("activate", {"target": "local", "frontier_mode": "escalation"}),
-    ("activate", {"target": "colab", "frontier_mode": "off"}),
+    ("activate", {"target": "remote", "frontier_mode": "off"}),
 ])
 def test_local_mode_refuses_cloud_before_network(tmp_path, path, body):
     app = FastAPI()

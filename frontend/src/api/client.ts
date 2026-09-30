@@ -143,11 +143,7 @@ export function fetchRuntimeConfig(): Promise<RuntimeConfig> {
 
 export interface RuntimeRequest {
   target: RuntimeTarget;
-  colab_url?: string;
-  /** Hanya dikirim bila diisi; kosong = pakai token tersimpan, hanya untuk endpoint asalnya. */
-  token?: string;
-  /** Persetujuan eksplisit memakai token tersimpan untuk host yang berbeda dari asalnya. */
-  reuse_saved_token?: boolean;
+
 }
 
 function runtimeBody(body: object): RequestInit {

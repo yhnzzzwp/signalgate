@@ -8,7 +8,7 @@ type Tab = "screening" | "reports" | "runtime";
 const TABS: { key: Tab; label: string; hint: string }[] = [
   { key: "screening", label: "Screening aksi korporasi", hint: "Red flag struktural dari pengumuman dan berita" },
   { key: "reports", label: "Laporan emiten", hint: "Empat panel: fundamental, valuasi, technical, berita" },
-  { key: "runtime", label: "Runtime & GPU", hint: "Lokasi GPU (MacBook/Colab), cek kesiapan, mode frontier" },
+  { key: "runtime", label: "Runtime & GPU", hint: "Ollama lokal, kesiapan model, CPU dan GPU" },
 ];
 
 export function App() {

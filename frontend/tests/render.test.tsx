@@ -111,7 +111,7 @@ test("laporan baru: provenance runtime, pembanding berurutan, kronologi", () => 
   const report = {
     ...oldReport,
     plan: { ...oldReport.plan, reviewer_models: ["glm4:9b", "gemma3:12b"] },
-    runtime: { bound: { target: "colab", ollama_url: "https://x.trycloudflare.com", frontier: { enabled: true, mode: "shadow" } },
+    runtime: { bound: { target: "local", ollama_url: "http://127.0.0.1:11434", frontier: { enabled: true, mode: "shadow" } },
                history: [{ event: "start", at: "2026-09-28T01:00:00+00:00", from_nodes: [] },
                          { event: "resume_config_changed", at: "2026-09-28T02:00:00+00:00", from_nodes: ["publish"],
                            changes: [{ field: "ollama_url", before: "https://a", after: "https://x" }] }] },
@@ -125,7 +125,7 @@ test("laporan baru: provenance runtime, pembanding berurutan, kronologi", () => 
   } as unknown as WorkflowReport;
   const html = renderToStaticMarkup(<WorkflowPanels report={report} />);
   assert.match(html, /glm4:9b → gemma3:12b/);
-  assert.match(html, /GPU Colab/);
+  assert.match(html, /Perangkat lokal/);
   assert.match(html, /1x resume/);
   assert.match(html, /belum terselesaikan/);
 });

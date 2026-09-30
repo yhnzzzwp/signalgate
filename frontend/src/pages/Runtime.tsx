@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ApiError, activateRuntime, checkRuntime, fetchRuntimeConfig } from "../api/client";
-import type { RuntimeCheck, RuntimeConfig, RuntimeFrontierMode, RuntimeTarget } from "../types";
+import type { RuntimeCheck, RuntimeConfig, RuntimeFrontierMode } from "../types";
 
 const GPU_TEXT: Record<string, string> = {
   proven: "terbukti di GPU",
@@ -11,22 +11,11 @@ const GPU_TEXT: Record<string, string> = {
 const OLLAMA_TEXT: Record<string, string> = {
   connected: "tersambung",
   unauthorized: "token ditolak",
-  not_gateway: "bukan gateway SignalGate",
   disconnected: "terputus",
   invalid_endpoint: "URL ditolak",
   redirect_refused: "redirect ditolak",
   not_checked: "belum dicek",
 };
-
-const TARGET_TEXT: Record<string, string> = {
-  local: "MacBook (Ollama lokal)",
-  colab: "GPU Colab (gateway bertoken)",
-  env: "ikut backend/.env (belum pernah diaktifkan)",
-};
-
-function isLoopback(url: string | null): boolean {
-  return !!url && /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(url);
-}
 
 function Row({ label, ok, text, detail }: { label: string; ok: boolean | null; text: string; detail?: string | null }) {
   const state = ok === null ? "unknown" : ok ? "ok" : "bad";
@@ -103,15 +92,9 @@ function CheckView({ check }: { check: RuntimeCheck }) {
 
 export function Runtime() {
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
-  const [target, setTarget] = useState<RuntimeTarget>("local");
-  const [colabUrl, setColabUrl] = useState("");
-  // Token hanya hidup di state komponen sampai dikirim; tidak pernah ke localStorage atau URL.
-  const [token, setToken] = useState("");
   const [frontierMode, setFrontierMode] = useState<RuntimeFrontierMode>("off");
   const [probeGpu, setProbeGpu] = useState(false);
   const [checkKey, setCheckKey] = useState(false);
-  // Persetujuan eksplisit memakai token tersimpan untuk host yang berbeda dari asal token itu.
-  const [reuseToken, setReuseToken] = useState(false);
   // Aktivasi ditolak karena belum siap; operator boleh menyimpan tetap secara sadar.
   const [canForce, setCanForce] = useState(false);
   const [check, setCheck] = useState<RuntimeCheck | null>(null);
@@ -122,10 +105,8 @@ export function Runtime() {
   function adopt(next: RuntimeConfig) {
     setConfig(next);
     const effective = next.effective;
-    setTarget(next.local_only ? "local" : next.state.target === "env" ? (isLoopback(effective.ollama_url) ? "local" : "colab") : next.state.target);
-    setColabUrl(next.state.colab_url ?? (isLoopback(effective.ollama_url) ? "" : (effective.ollama_url ?? "")));
     setFrontierMode(
-      next.local_only ? "off" : next.state.frontier_mode === "env"
+      next.local_only ? "off" : !next.state.frontier_mode
         ? effective.frontier.enabled
           ? (effective.frontier.mode as RuntimeFrontierMode)
           : "off"
@@ -147,12 +128,7 @@ export function Runtime() {
     };
   }, []);
 
-  const body = () => ({
-    target,
-    ...(target === "colab" ? { colab_url: colabUrl.trim() } : {}),
-    ...(target === "colab" && token.trim() ? { token: token.trim() } : {}),
-    ...(target === "colab" && !token.trim() && reuseToken ? { reuse_saved_token: true } : {}),
-  });
+  const body = () => ({ target: "local" as const });
 
   async function runCheck() {
     setBusy("check");
@@ -176,8 +152,6 @@ export function Runtime() {
       const next = await activateRuntime({ ...body(), frontier_mode: frontierMode, allow_not_ready: allowNotReady });
       adopt(next);
       setCheck(next.check);
-      setToken("");
-      setReuseToken(false);
       setNotice(
         (next.saved_not_ready
           ? `Konfigurasi TERSIMPAN tetapi BELUM SIAP (revisi ${next.state.revision}); run berikutnya bisa gagal sampai model tersedia.`
@@ -198,21 +172,13 @@ export function Runtime() {
 
   const effective = config?.effective;
   const keyConfigured = !config?.local_only && (effective?.frontier.key_configured ?? false);
-  const typedHost = colabUrl.trim().replace(/\/+$/, "");
-  // Token tersimpan hanya berlaku untuk host asalnya; host lain butuh token baru atau persetujuan eksplisit.
-  const hostChanged =
-    target === "colab" &&
-    Boolean(config?.state.token_configured) &&
-    typedHost !== "" &&
-    typedHost !== (config?.state.token_endpoint ?? "");
-
   return (
     <section className="dashboard__page runtime">
       <header className="reports__header">
         <div>
           <h2>Runtime & GPU</h2>
           <p className="dashboard__disclaimer">
-            Pilih tempat model lokal berjalan dan mode reviewer frontier. Perubahan berlaku untuk run berikutnya; run
+            Periksa Ollama dan model pada perangkat Windows, Linux, atau macOS ini. Perubahan berlaku untuk run berikutnya; run
             yang sedang berjalan tidak ikut berubah. Key Sectors/DeepSeek tetap di <code>backend/.env</code> dan tidak
             bisa diisi dari sini.
           </p>
@@ -223,7 +189,7 @@ export function Runtime() {
         <div className="runtime__current">
           <h3>Berlaku sekarang (revisi {config.state.revision})</h3>
           <p className="event-card__source-meta">
-            {TARGET_TEXT[effective.target] ?? effective.target} · {effective.ollama_url ?? "-"} · token{" "}
+            Perangkat ini (Ollama lokal) · {effective.ollama_url ?? "-"} · token{" "}
             {effective.auth === "token" ? `terpasang (${effective.token_fingerprint})` : "tidak ada"}
           </p>
           <p className="event-card__source-meta">
@@ -254,58 +220,9 @@ export function Runtime() {
           void activate();
         }}
       >
-        <fieldset className="runtime__targets">
-          <legend>Lokasi GPU</legend>
-          {(["local", "colab"] as RuntimeTarget[]).map((option) => (
-            <label key={option} className="runtime__choice">
-              <input type="radio" name="target" disabled={config?.local_only && option === "colab"} checked={target === option} onChange={() => setTarget(option)} />
-              {TARGET_TEXT[option]}
-            </label>
-          ))}
-        </fieldset>
-
-        {target === "colab" ? (
-          <>
-            <label className="reports__field runtime__wide">
-              <span>URL layanan Colab (https://…trycloudflare.com, bukan link halaman notebook)</span>
-              <input
-                value={colabUrl}
-                onChange={(event) => setColabUrl(event.target.value)}
-                placeholder="https://contoh-acak.trycloudflare.com"
-                inputMode="url"
-                autoComplete="off"
-                required
-              />
-            </label>
-            <label className="reports__field runtime__wide">
-              <span>
-                Token gateway{" "}
-                {config?.state.token_configured
-                  ? `(tersimpan untuk ${config.state.token_endpoint ?? "endpoint lama"}; kosongkan untuk memakainya di host itu)`
-                  : "(wajib)"}
-              </span>
-              <input
-                type="password"
-                value={token}
-                onChange={(event) => setToken(event.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-                placeholder={config?.state.token_configured ? "token tersimpan dipakai" : "tempel token dari notebook"}
-              />
-            </label>
-            {hostChanged && !token.trim() && (
-              <label className="runtime__choice runtime__wide">
-                <input type="checkbox" checked={reuseToken} onChange={(event) => setReuseToken(event.target.checked)} />
-                Host berbeda dari asal token tersimpan. Token lama tidak dikirim ke host ini kecuali kamu menyetujuinya
-                di sini — lebih aman tempel token baru dari notebook.
-              </label>
-            )}
-          </>
-        ) : (
-          <p className="event-card__source-meta runtime__wide">
-            Mode lokal memakai Ollama di mesin ini ({"http://127.0.0.1:11434"}); tidak perlu URL atau token.
-          </p>
-        )}
+        <p className="event-card__source-meta runtime__wide">
+          Ollama lokal: {effective?.ollama_url ?? "http://127.0.0.1:11434"}. CPU tetap didukung; GPU mempercepat inferensi.
+        </p>
 
         <label className="reports__field">
           <span>Reviewer frontier</span>
@@ -319,7 +236,7 @@ export function Runtime() {
             </option>
           </select>
         </label>
-        {config?.local_only && <p className="event-card__source-meta runtime__wide">Inferensi lokal aktif. Colab dan frontier dinonaktifkan.</p>}
+        {config?.local_only && <p className="event-card__source-meta runtime__wide">Inferensi lokal aktif. Frontier dinonaktifkan.</p>}
         {!keyConfigured && !config?.local_only && (
           <p className="event-card__source-meta runtime__wide">
             Shadow/escalation butuh <code>DEEPSEEK_API_KEY</code> di <code>backend/.env</code> lalu restart backend.
@@ -370,7 +287,7 @@ export function Runtime() {
       {check && (
         <section className="runtime__result" aria-live="polite">
           <h3>
-            Hasil cek {check.target === "colab" ? "Colab" : "lokal"} ·{" "}
+            Hasil cek lokal ·{" "}
             {check.ready_for_next_run ? "siap untuk run berikutnya" : "belum siap"}
           </h3>
           <CheckView check={check} />

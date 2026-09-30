@@ -270,7 +270,7 @@ export interface ClaimFrontier {
   second_look?: FrontierVerdictView | null;
 }
 
-export type RuntimeTarget = "local" | "colab";
+export type RuntimeTarget = "local";
 export type RuntimeFrontierMode = "off" | "shadow" | "escalation";
 
 /** Konfigurasi efektif nonrahasia; token/key hanya muncul sebagai status dan sidik jari. */
@@ -299,16 +299,11 @@ export interface RuntimeConfig {
   local_only?: boolean;
   state: {
     revision: number;
-    target: RuntimeTarget | "env";
-    colab_url: string | null;
-    frontier_mode: RuntimeFrontierMode | "env";
+    target: RuntimeTarget | null;
+    frontier_mode: RuntimeFrontierMode | null;
     updated_at: string | null;
     /** false = tersimpan atas persetujuan eksplisit walau belum siap. */
     ready_at_activation: boolean | null;
-    token_configured: boolean;
-    token_fingerprint: string | null;
-    /** Endpoint tempat token tersimpan diberikan; token tidak dikirim otomatis ke host lain. */
-    token_endpoint: string | null;
   };
   effective: RuntimeSnapshot;
   active_run: RunJob | null;
