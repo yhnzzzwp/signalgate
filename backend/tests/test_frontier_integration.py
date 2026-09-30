@@ -205,10 +205,9 @@ class WorkflowFrontierTests(WorkflowTestBase):
         with patch.object(nodes, "publish_node", side_effect=RuntimeError("disk penuh")):
             with pytest.raises(RuntimeError):
                 runner.execute(run["run_id"])
-        store.save(target="colab", colab_url="https://baru.trycloudflare.com", frontier_mode=None,
-                   token="token-baru-yang-cukup-panjang-12345")
+        runner.settings = runner.settings.model_copy(update={"ollama_local_url": "http://127.0.0.1:11435"})
         changes = runner.config_changes(run["run_id"])
-        assert {item["field"] for item in changes} >= {"target", "ollama_url", "token_fingerprint"}
+        assert {item["field"] for item in changes} >= {"ollama_url"}
         with pytest.raises(WorkflowConfigChanged):
             runner.execute(run["run_id"], resume=True)
         result = runner.execute(run["run_id"], resume=True, accept_config_change=True)
@@ -216,7 +215,7 @@ class WorkflowFrontierTests(WorkflowTestBase):
         history = load_binding(runner.run_dir(run["run_id"])).history
         assert [entry["event"] for entry in history] == ["start", "resume_config_changed"]
         assert history[1]["from_nodes"] == ["publish"]
-        assert report["runtime"]["bound"]["target"] == "colab"
+        assert report["runtime"]["bound"]["target"] == "local"
         assert "token-baru" not in json.dumps(report)
         assert {timing["config_index"] for timing in report["node_timings"]} == {0}  # publish (indeks 1) setelah report
 

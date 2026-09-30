@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 from pathlib import Path
+import re
 import socket
 import time
 from urllib.parse import urldefrag, urljoin, urlsplit
@@ -16,6 +17,45 @@ from app.research.context import excerpt
 from app.research.models import Evidence
 
 USER_AGENT = "SignalGateResearch/1.0"
+# Naikkan setiap kali cara membaca HTML berubah: snapshot lama diekstrak ulang dari HTML mentahnya.
+HTML_EXTRACTOR_VERSION = "html-article-v2"
+# Wadah isi artikel yang teruji pada sumber yang dipakai (emitennews, detik, schema.org). Tanpa ini,
+# `article/main/body` di emitennews memuat strip indeks dua kali, profil penulis, Related News, dan
+# Trending; kandidat 1.500 karakter habis oleh indeks dan "rights issue" dari judul berita lain
+# ikut mengklasifikasi artikel (SRAJ, 28 Sep 2026).
+ARTICLE_BODY_SELECTORS = ("[itemprop=articleBody]", "div.article-body", "div.detail__body-text")
+IGNORED_TAGS = ("script", "style", "nav", "footer")
+RELATED_HEADINGS = frozenset({
+    "related news", "related articles", "berita terkait", "artikel terkait", "berita lainnya", "trending",
+    "terpopuler", "populer", "most popular", "baca berita lainnya",
+})
+MIN_ARTICLE_CHARS = 200
+
+
+def _without_related(text: str) -> str:
+    """Potong di judul bagian rekomendasi berita, bila artikelnya sudah cukup panjang sebelum itu."""
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        if (line.strip().lower().rstrip(":") in RELATED_HEADINGS
+                and len("\n".join(lines[:index]).strip()) >= MIN_ARTICLE_CHARS):
+            lines = lines[:index]
+            break
+    while lines and re.fullmatch(r"[\d<>«»‹›|\s]*", lines[-1]):
+        lines.pop()  # sisa navigasi halaman artikel ("1 2 >")
+    return "\n".join(lines)
+
+
+def main_text(page) -> str:
+    """Teks artikel utama: judul + isi, tanpa navigasi dan rekomendasi berita."""
+    for selector in ARTICLE_BODY_SELECTORS:
+        nodes = page.css(selector)
+        body = "\n".join(node.get_all_text(strip=True, ignore_tags=IGNORED_TAGS) for node in nodes)
+        if len(body.strip()) >= MIN_ARTICLE_CHARS:
+            heading = page.css("h1")
+            title = heading[0].get_all_text(strip=True) if heading else ""
+            return _without_related(f"{title}\n{body}" if title and title not in body else body)
+    nodes = page.css("article") or page.css("main") or page.css("body")
+    return _without_related("\n".join(node.get_all_text(strip=True, ignore_tags=IGNORED_TAGS) for node in nodes))
 
 
 def public_url(url: str) -> str:
@@ -87,9 +127,7 @@ class ScraplingSource:
             raise ValueError("Versi pertama hanya mengekstrak HTML; PDF/biner belum didukung.")
         if len(page.body) > 2_000_000:
             raise ValueError("Halaman melebihi batas 2 MB.")
-        nodes = page.css("article") or page.css("main") or page.css("body")
-        text = "\n".join(node.get_all_text(strip=True, ignore_tags=("script", "style", "nav", "footer"))
-                         for node in nodes)[:16000]
+        text = main_text(page)[:16000]
         if len(text.strip()) < 80:
             raise ValueError("Teks sumber terlalu pendek atau membutuhkan JavaScript.")
         links = list(dict.fromkeys(urldefrag(urljoin(url, link))[0]

@@ -50,7 +50,7 @@ class OllamaAgent:
         self.think = think
         self.digest = "unknown"
         self.keep_alive = keep_alive
-        # Gateway Colab mewajibkan Bearer token. Redirect tidak diikuti: endpoint yang mengalihkan ke alamat
+        # Otentikasi opsional untuk klien Ollama. Redirect tidak diikuti: endpoint yang mengalihkan ke alamat
         # lain (mis. halaman login atau alamat internal) diperlakukan sebagai gagal, bukan diikuti diam-diam.
         headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else None
         self.client = client or httpx.Client(timeout=timeout, headers=headers, follow_redirects=False)
@@ -68,7 +68,7 @@ class OllamaAgent:
             response = self.client.get(f"{self.base_url}/api/tags", timeout=5.0)
             if response.status_code in (401, 403):
                 raise AgentError(f"Gateway Ollama di {self.base_url} menolak token (HTTP {response.status_code}); "
-                                 "tempel token baru dari notebook Colab di dashboard.")
+                                 "periksa konfigurasi layanan Ollama lokal.")
             response.raise_for_status()
             models = response.json().get("models", [])
             installed = {model["name"] for model in models}

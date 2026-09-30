@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -27,6 +28,11 @@ CONTROLLER_EXIT_MIN_PERCENT = 1.0
 # Kategori penggunaan dana yang membangun bisnisnya. Di luar ini, dana tidak menambah kemampuan
 # emiten menghasilkan kas.
 BUILDING_FUND_USES = frozenset({"core_expansion", "working_capital", "acquisition"})
+# Frasa penggunaan pembangun bisnis di dalam kutipan pelunasan utang itu sendiri. Nama jenis kredit
+# ("kredit modal kerja", "pinjaman investasi") dibuang dulu: melunasi kredit modal kerja tetap utang.
+BUILDING_USE_TERMS = ("modal kerja", "belanja modal", "capex", "capital expenditure", "working capital",
+                      "ekspansi", "expansion", "pengembangan usaha", "akuisisi", "acquisition")
+LOAN_NAME = re.compile(r"\b(?:kredit|pinjaman|fasilitas|utang|hutang)\s+(?:modal kerja|investasi)\b")
 
 Side = Literal["red", "growth"]
 
@@ -159,16 +165,26 @@ def cash_burn_signals(context: MarketContext) -> list[Signal]:
                    f"sementara emiten menggalang dana", "sectors:quarterly", "cash_burn")]
 
 
-def debt_only_signals(facts: list[Fact]) -> list[Signal]:
+def debt_only_signals(facts: list[Fact], unverified_uses=frozenset()) -> list[Signal]:
     """Rights issue yang dananya hanya menutup utang, tanpa satu pun penggunaan yang membangun bisnis.
 
     `debt_repayment` sudah lama diekstrak model tetapi tidak punya aturan skor, jadi pola ini lolos
     tanpa sinyal. Melunasi utang dengan ekuitas baru memindahkan risiko dari kreditur ke pemegang
     saham publik tanpa menambah kemampuan emiten menghasilkan kas. Yang dinilai eksklusivitasnya:
     melunasi utang sambil berekspansi adalah cerita yang berbeda.
+
+    Eksklusivitas perlu bukti, bukan sisa penyaringan. Fakta ekspansi yang gagal divalidasi berarti
+    cakupan penggunaan dana belum lengkap, bukan tidak ada; dan kutipan utang yang sendiri menyebut
+    belanja modal atau modal kerja membantah kata "hanya" (EPAC, 28 Sep 2026).
     """
     uses = {fact.value for fact in facts if fact.topic == "use_of_funds"}
     if "debt_repayment" not in uses or uses & BUILDING_FUND_USES:
+        return []
+    if set(unverified_uses) & BUILDING_FUND_USES:
+        return []
+    debt_quotes = [LOAN_NAME.sub(" ", fact.quote.lower()) for fact in facts
+                   if fact.topic == "use_of_funds" and fact.value == "debt_repayment"]
+    if any(term in quote for quote in debt_quotes for term in BUILDING_USE_TERMS):
         return []
     return [Signal("red", 2, "Seluruh dana yang terverifikasi hanya untuk melunasi utang, tanpa "
                              "penggunaan yang menambah kemampuan menghasilkan kas",
@@ -264,9 +280,12 @@ def compose_summary(ticker: str, bucket: ActionBucket | None, signals: list[Sign
     return " ".join(parts)
 
 
-def score_signals(context: MarketContext, facts: list[Fact]) -> list[Signal]:
-    """The one place signals are assembled, so drafts, reviews and the published score always agree."""
-    signals = market_signals(context) + fact_signals(facts) + debt_only_signals(facts)
+def score_signals(context: MarketContext, facts: list[Fact], unverified_uses=frozenset()) -> list[Signal]:
+    """The one place signals are assembled, so drafts, reviews and the published score always agree.
+
+    `unverified_uses`: kategori penggunaan dana yang diklaim tetapi tidak lolos validasi.
+    """
+    signals = market_signals(context) + fact_signals(facts) + debt_only_signals(facts, unverified_uses)
     return signals + contradiction_signals(signals, context)
 
 

@@ -11,7 +11,8 @@ import type {
   WorkflowRun,
 } from "../types";
 
-export const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+export const BASE_URL = (import.meta.env.PROD ? "" :
+  (import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000")).replace(/\/$/, "");
 
 /**
  * Kegagalan yang dijawab server, lengkap dengan penjelasannya.
@@ -142,11 +143,7 @@ export function fetchRuntimeConfig(): Promise<RuntimeConfig> {
 
 export interface RuntimeRequest {
   target: RuntimeTarget;
-  colab_url?: string;
-  /** Hanya dikirim bila diisi; kosong = pakai token tersimpan, hanya untuk endpoint asalnya. */
-  token?: string;
-  /** Persetujuan eksplisit memakai token tersimpan untuk host yang berbeda dari asalnya. */
-  reuse_saved_token?: boolean;
+
 }
 
 function runtimeBody(body: object): RequestInit {

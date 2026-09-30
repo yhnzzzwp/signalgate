@@ -6,6 +6,12 @@ from app.research.evidence import EvidenceStore
 from app.research.models import Evidence, Extraction, Fact, Quoted, Validation
 
 MIN_QUOTE_CHARS = 12
+# Kutipan pendek pembanding ("modal kerja") hanya dipakai sebagai dukungan bila berada di dalam kutipan
+# analis yang sudah terverifikasi; sendirian ia tidak membuktikan apa-apa.
+MIN_HINT_CHARS = 5
+# Satu kalimat boleh menyebut beberapa penggunaan dana sekaligus (ekspansi, utang, modal kerja).
+# Yang saling meniadakan hanya klasifikasi bisnis yang sama: inti atau baru, tidak bisa keduanya.
+EXCLUSIVE_USES = (frozenset({"core_expansion", "new_business"}),)
 FLAG_TOPICS = ("business_change", "old_business_divested", "asset_injection")
 ENTITY_RELATIONS = {"existing_shareholder", "affiliate", "new_party", "creditor"}
 LEGAL_TOKENS = {"pt", "tbk", "persero"}
@@ -72,6 +78,19 @@ def evidence_item(store: EvidenceStore, evidence_id: str) -> Evidence | None:
     return None if item is None or item.kind == "input" else item
 
 
+def is_issuer(name: str, issuer_names=()) -> bool:
+    """Emiten dikenali dari nama tanpa anotasi atau dari kode di dalam kurung.
+
+    Model rutin menulis "PT Sejahteraraya Anugrahjaya Tbk. (SRAJ)"; dulu anotasi itu membuat nama
+    tidak identik dengan nama emiten sehingga emiten lolos sebagai new_party bagi dirinya sendiri.
+    """
+    keys = {party_key(issuer) for issuer in issuer_names if issuer}
+    keys.discard("")
+    if party_key(name) in keys:
+        return True
+    return any(simplify(tag) in keys for tag in re.findall(r"\(([^)]*)\)", name))
+
+
 def party_name_issue(name: str, relation: str, source: str, issuer_names=()) -> str | None:
     if relation not in ENTITY_RELATIONS:
         return None
@@ -80,10 +99,10 @@ def party_name_issue(name: str, relation: str, source: str, issuer_names=()) -> 
         return f"nama pihak '{name}' terlalu umum, memakai deskripsi peran"
     if not simplified or all(token in GENERIC_PARTY_WORDS for token in simplified.split()):
         return f"nama pihak '{name}' terlalu umum, bukan badan atau orang spesifik"
+    if is_issuer(name, issuer_names):
+        return f"nama pihak '{name}' adalah emiten sendiri, bukan penerima eksternal"
     if simplified not in simplify(source):
         return f"nama pihak '{name}' tidak ada di sumber"
-    if simplified in {simplify(issuer) for issuer in issuer_names if issuer}:
-        return f"nama pihak '{name}' adalah emiten sendiri, bukan penerima eksternal"
     return None
 
 
@@ -110,6 +129,11 @@ def verified_facts(extraction: Extraction, store: EvidenceStore, issuer_names=()
     facts: list[Fact] = []
     issues: list[str] = []
     for topic, value, claim, source in asserted_facts(extraction):
+        length = len(flatten(source.quote))
+        if length < MIN_QUOTE_CHARS:
+            issues.append(f"{topic}={value} diabaikan: kutipan terlalu pendek ({length} karakter, minimal "
+                          f"{MIN_QUOTE_CHARS}); kutip kalimat utuh.")
+            continue
         item = evidence_item(store, source.evidence_id)
         span = locate_quote(source.quote, item.text) if item else None
         evidence_id = source.evidence_id
@@ -166,7 +190,24 @@ def quotes_overlap(first: str, second: str) -> bool:
     return first in second or second in first
 
 
-def compare_independent_facts(facts: list[Fact], independent: list[Fact]) -> Validation:
+def short_use_hints(extraction: Extraction, store: EvidenceStore) -> list[tuple[str, str, str]]:
+    """Penggunaan dana yang dikutip terlalu pendek untuk jadi fakta sendiri ("modal kerja"), tetapi
+    kata-katanya memang ada di bukti yang dirujuk. Hanya dipakai compare_independent_facts."""
+    hints = []
+    for use in extraction.use_of_funds:
+        quote = flatten(use.quote).lower()
+        item = evidence_item(store, use.evidence_id)
+        if (use.category != "unknown" and MIN_HINT_CHARS <= len(quote) < MIN_QUOTE_CHARS and item
+                and quote in flatten(item.text).lower()):
+            hints.append((use.category, quote, use.evidence_id))
+    return hints
+
+
+def exclusive_uses(first: str, second: str) -> bool:
+    return any({first, second} <= group for group in EXCLUSIVE_USES)
+
+
+def compare_independent_facts(facts: list[Fact], independent: list[Fact], hints=()) -> Validation:
     """The second model never sees the first model's labels, facts or proposed values."""
     checks = []
     for fact in facts:
@@ -177,10 +218,17 @@ def compare_independent_facts(facts: list[Fact], independent: list[Fact]) -> Val
                              other.evidence_id == fact.evidence_id and
                              (quotes_overlap(other.quote, fact.quote) if fact.topic == "use_of_funds" else True))]
         matches = [other for other in same_subject if other.value == fact.value]
+        if not matches and fact.topic == "use_of_funds":
+            quote = flatten(fact.quote).lower()
+            matches = [hint for hint in hints
+                       if hint[0] == fact.value and hint[2] == fact.evidence_id and hint[1] in quote]
         status = "supported" if matches else "not_supported"
         # Different classifications for the same quote are a concrete disagreement, unless the reader
-        # also split that sentence into this same classification.
+        # also split that sentence into this same classification. For uses of funds only mutually
+        # exclusive categories disagree: a reader that saw debt repayment in a sentence listing capex,
+        # debt and working capital merely omitted the other uses, it did not deny them.
         if not matches and any(other.value != fact.value and quotes_overlap(other.quote, fact.quote)
+                               and (fact.topic != "use_of_funds" or exclusive_uses(fact.value, other.value))
                                for other in same_subject):
             status = "contradicted"
         checks.append({"fact_id": fact.id, "status": status,

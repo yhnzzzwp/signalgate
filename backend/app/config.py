@@ -21,8 +21,9 @@ PROFILES: dict[Profile, dict[str, object]] = {
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=REPO_ROOT / "backend" / ".env", extra="ignore")
 
+    local_only: bool = False
     signalgate_profile: Profile = "laptop"
     sectors_api_key: str = ""
     sectors_api_key_backups: list[str] = Field(default_factory=list)
@@ -31,9 +32,9 @@ class Settings(BaseSettings):
     # Endpoint dari env. Setelah lokasi GPU diaktifkan dari dashboard (app/runtime.py), pilihan runtime
     # itulah yang dipakai untuk run berikutnya; env tetap jadi bawaan selama belum pernah diaktifkan.
     ollama_base_url: str = "http://127.0.0.1:11434"
-    # Ollama di mesin ini (MacBook). Dipakai saat target runtime = "local".
+    # Ollama di perangkat ini (Windows/Linux/macOS). Dipakai saat target runtime = "local".
     ollama_local_url: str = "http://127.0.0.1:11434"
-    # Token gateway Colab (Authorization: Bearer). Token yang ditempel di dashboard lebih diutamakan.
+    # Token klien lama; runtime lokal tidak meneruskannya.
     ollama_auth_token: SecretStr = SecretStr("")
     ollama_model: str = "qwen2.5:7b"
     ollama_validator_model: str | None = None
@@ -75,7 +76,7 @@ class Settings(BaseSettings):
     research_source_urls: list[str] = Field(default_factory=list)
     research_cases_dir: Path = REPO_ROOT / "cases"
     scan_directory: Path = REPO_ROOT / "data" / "scans"
-    signalgate_db_path: str = "./signalgate.db"
+    signalgate_db_path: str = str(REPO_ROOT / "backend" / "signalgate.db")
 
     # --- Reviewer frontier (opsional, berbayar). Mati secara bawaan: tanpa ini perilaku lokal tidak berubah.
     frontier_enabled: bool = False
@@ -118,7 +119,7 @@ class Settings(BaseSettings):
     # tidak dikirim. Sekaligus membatasi reservasi biaya input per panggilan.
     frontier_max_input_chars: int = Field(default=24_000, ge=4_000, le=400_000)
     frontier_directory: Path = REPO_ROOT / "data" / "frontier"
-    # Pilihan lokasi GPU dan mode frontier dari dashboard (config.json) + token Colab (secrets.json, 0600).
+    # Pengaturan runtime lokal dari dashboard.
     runtime_directory: Path = REPO_ROOT / "data" / "runtime"
 
     @property
@@ -135,6 +136,10 @@ class Settings(BaseSettings):
         so a profile can raise the defaults for the other machine without ever overriding a value the
         operator wrote down. Explicit configuration always wins.
         """
+        if self.signalgate_db_path != ":memory:":
+            path = Path(self.signalgate_db_path).expanduser()
+            if not path.is_absolute():
+                self.signalgate_db_path = str(REPO_ROOT / "backend" / path)
         for field, value in PROFILES[self.signalgate_profile].items():
             if field not in self.model_fields_set:
                 setattr(self, field, value)

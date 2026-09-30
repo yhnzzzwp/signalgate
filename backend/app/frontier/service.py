@@ -42,6 +42,11 @@ def build_frontier(settings: Settings) -> "FrontierService | None":
     return FrontierService(settings)
 
 
+# Setelah semua percobaan satu langkah gagal di fase koneksi, langkah berikutnya dalam jendela ini
+# langsung dilewati: satu batch kandidat tidak perlu menunggu 2x15 detik per kandidat ke host yang mati.
+UNREACHABLE_COOLDOWN_SECONDS = 120
+
+
 class FrontierService:
     def __init__(self, settings: Settings, *, client=None, ledger: BudgetLedger | None = None,
                  cache: FrontierCache | None = None, now=None, sleep=time.sleep) -> None:
@@ -62,6 +67,8 @@ class FrontierService:
         self.cache = cache or FrontierCache(settings.frontier_directory)
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.sleep = sleep
+        self.monotonic = time.monotonic
+        self._unreachable: tuple[float, str] | None = None  # (sampai kapan, pesan terakhir)
 
     # -- infrastruktur ----------------------------------------------------------------------------
 
@@ -145,8 +152,14 @@ class FrontierService:
                                               "tidak dikirim."))
             return None, call
 
+        if self._unreachable and self.monotonic() < self._unreachable[0]:
+            call.update(status=FAILED, error=("unreachable: API frontier tidak terjangkau pada percobaan terakhir "
+                                              f"({self._unreachable[1]}); langkah ini dilewati tanpa panggilan dan "
+                                              "tanpa biaya."))
+            return None, call
         max_attempts = 1 + self.settings.frontier_max_retries
         prompt_bytes = len(SYSTEM.encode("utf-8")) + len(user.encode("utf-8"))
+        unsent = 0
         total_cost = 0.0
 
         def add_usage(usage: dict | None) -> None:
@@ -191,8 +204,10 @@ class FrontierService:
                 message = redact(str(error), self._secrets())
                 cost = pricing.estimate(self.model, error.usage, at) if error.usage else None
                 overshoot = False
+                if not error.sent:
+                    unsent += 1
                 if error.billed == "no":
-                    self.ledger.release(reservation, message)
+                    self.ledger.release(reservation, message, sent=error.sent)
                 elif cost and cost.get("cost_usd_estimate") is not None:
                     overshoot = self.ledger.settle(reservation, (error.usage or {}).get("total_tokens"),
                                                    cost["cost_usd_estimate"], message)
@@ -203,8 +218,9 @@ class FrontierService:
                     mark_unknown()
                 call["overshoot"] = call["overshoot"] or overshoot
                 call["attempt_log"].append({"attempt": call["attempts"], "error": message, "kind": error.kind,
-                                            "billed": error.billed, "usage": error.usage, "seconds": seconds,
-                                            "reserved_usd": reservation.usd, "overshoot": overshoot})
+                                            "phase": error.phase, "billed": error.billed, "usage": error.usage,
+                                            "seconds": seconds, "reserved_usd": reservation.usd,
+                                            "overshoot": overshoot})
                 call.update(error=message, request_id=error.request_id or call["request_id"])
                 log.warning("frontier %s gagal (%s)", step, message)
                 if progress:
@@ -213,7 +229,10 @@ class FrontierService:
                     self.sleep(min(2 ** call["attempts"], 8))
                     continue
                 call["status"] = FAILED
+                if unsent == call["attempts"]:
+                    self._unreachable = (self.monotonic() + UNREACHABLE_COOLDOWN_SECONDS, message)
                 break
+            self._unreachable = None
             seconds = round(time.monotonic() - started, 2)
             call["seconds"] = round(call["seconds"] + seconds, 2)
             cost = pricing.estimate(self.model, raw.usage, at)

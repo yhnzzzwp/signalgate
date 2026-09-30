@@ -92,6 +92,8 @@ export function Reports() {
   }, []);
 
   useEffect(() => {
+    // The callback awaits HTTP before updating state; this effect synchronizes external data.
+    // oxlint-disable-next-line react/set-state-in-effect
     void loadRuns().then((results) => {
       if (results.length > 0) void openRun(results[0].run_id);
     });

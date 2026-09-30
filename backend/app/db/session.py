@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from sqlalchemy import create_engine, inspect
+from pathlib import Path
+
+from sqlalchemy import URL, create_engine, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
@@ -46,7 +48,9 @@ def ensure_schema(engine) -> list[str]:
 
 
 def build_engine(settings: Settings):
-    engine = create_engine(f"sqlite:///{settings.signalgate_db_path}")
+    if settings.signalgate_db_path != ":memory:":
+        Path(settings.signalgate_db_path).parent.mkdir(parents=True, exist_ok=True)
+    engine = create_engine(URL.create("sqlite", database=settings.signalgate_db_path))
     Base.metadata.create_all(engine)
     ensure_schema(engine)
     return engine

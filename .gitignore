@@ -1,6 +1,5 @@
 .env
 .env.local
-.env.colab
 *.db
 
 __pycache__/
@@ -24,5 +23,17 @@ data/workflow/
 data/scans/
 # Cache respons + buku besar budget frontier (lokal; replay offline membaca dari sini).
 data/frontier/
-# Pilihan runtime dari dashboard + token gateway Colab (secrets.json, izin 0600). Jangan pernah di-commit.
+# Pengaturan runtime dan kredensial lokal tidak ikut Git.
 data/runtime/
+
+# Local archives, database sidecars and build/cache artifacts
+.local-archive/
+.dist/
+*.db-*
+*.sqlite
+*.sqlite-*
+.env.*
+!.env.example
+*.tsbuildinfo
+.coverage
+htmlcov/

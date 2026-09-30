@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -70,6 +71,9 @@ def step_venv(recreate: bool) -> None:
         say(WARN, "Menghapus .venv lama atas permintaan --recreate-venv")
         shutil.rmtree(VENV)
     if venv_python().exists():
+        version = capture([str(venv_python()), "-c", "import sys; print('%s.%s' % sys.version_info[:2])"])
+        if not version or tuple(map(int, version.split("."))) < MIN_PYTHON:
+            die("Environment lama rusak atau versi Python terlalu rendah.", "Ulangi dengan --recreate-venv.")
         say(OK, f".venv sudah ada di {VENV.relative_to(REPO_ROOT)}")
         return
     say(OK, "Membuat .venv ...")
@@ -121,9 +125,11 @@ def step_env(profile: str, overwrite: bool) -> Path:
 def effective_models() -> list[str]:
     """Tanya aplikasinya sendiri model apa yang akan dipakai, supaya skrip ini tidak pernah basi."""
     script = (
-        "import json;from app.config import get_settings;s=get_settings();"
+        "import json;from app.config import get_settings;"
+        "from app.workflow.models import resolve_models,resolve_reviewers;s=get_settings();"
         "print(json.dumps({'backend':s.llm_backend,'models':[m for m in "
-        "[s.ollama_model,s.ollama_validator_model,*s.ollama_reviewer_models] if m]}))"
+        "[s.ollama_model,s.ollama_validator_model,*s.ollama_reviewer_models,"
+        "resolve_models(s)[0],*resolve_reviewers(s)] if m]}))"
     )
     raw = capture([str(venv_python()), "-c", script], cwd=BACKEND)
     if not raw:
@@ -142,18 +148,35 @@ def step_models(models: list[str], skip: bool) -> None:
         return
     if shutil.which("ollama") is None:
         die("Perintah `ollama` tidak ditemukan.",
-            "Pasang dari https://ollama.com/download lalu jalankan skrip ini lagi.\n"
-            "Di Windows, pakai versi terbaru: kartu RDNA4 (RX 9000) baru dikenali Ollama versi baru.")
+            "Pasang dari https://ollama.com/download lalu jalankan skrip ini lagi.")
     if not capture(["ollama", "list"]):
         die("Ollama terpasang tapi tidak merespons.", "Buka aplikasi Ollama (atau `ollama serve`) lalu ulangi.")
 
-    installed = capture(["ollama", "list"])
+    installed = {line.split()[0] for line in capture(["ollama", "list"]).splitlines()[1:] if line.strip()}
     for model in models:
-        if model in installed:
+        if model in installed or f"{model}:latest" in installed:
             say(OK, f"{model} sudah ada")
             continue
         say(OK, f"Mengunduh {model} ...")
         run(["ollama", "pull", model])
+
+
+def step_frontend(skip: bool) -> None:
+    if skip:
+        say(WARN, "Setup frontend dilewati.")
+        return
+    npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
+    node = shutil.which("node")
+    version = capture([node, "--version"]) if node else ""
+    match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", version)
+    if not match or int(match[1]) < 24:
+        die("Node.js 24+ dibutuhkan.", "Perbarui Node.js, kemudian ulangi setup.")
+    if not npm:
+        die("Node.js/npm belum tersedia.", "Pasang Node.js 24 LTS lalu ulangi setup.")
+    frontend = REPO_ROOT / "frontend"
+    run([npm, "ci"], cwd=frontend)
+    run([npm, "run", "build"], cwd=frontend)
+
 
 
 def step_tests(skip: bool) -> None:
@@ -186,7 +209,11 @@ Uji tanpa memakai satu pun kredit Sectors:
     cd backend{join}{activate}
     python -m app.scrapling_check --limit 1
 
-Menjalankan dashboard:
+Menjalankan satu layanan lokal (setelah build frontend):
+
+    cd backend{join}{activate}{join}python -m app.local
+
+Mode pengembangan:
 
     cd backend{join}{activate}{join}uvicorn app.main:app --reload
     cd frontend{join}npm install{join}{copy_env}{join}npm run dev
@@ -194,10 +221,8 @@ Menjalankan dashboard:
 Kalau nanti mau memakai data Sectors, isi SECTORS_API_KEY di backend/.env lalu ubah
 SECTORS_API_ENABLED menjadi true. Sebelum itu, /pipeline/run memang menolak jalan; itu disengaja.
 """)
-    if models and shutil.which("ollama"):
-        print("Pastikan model benar-benar di GPU, bukan CPU:\n\n    ollama ps\n")
-        print("Kolom PROCESSOR harus '100% GPU'. Kalau '100% CPU' di Windows dengan kartu AMD RDNA4,")
-        print("set HSA_OVERRIDE_GFX_VERSION=12.0.0 lalu restart Ollama dari tray.\n")
+    print("Jalankan dari folder repository: python run.py (Windows: py -3 run.py)")
+    print("CPU tetap didukung; periksa akselerasi GPU dengan ollama ps.")
 
 
 def main() -> None:
@@ -214,6 +239,7 @@ def main() -> None:
     parser.add_argument("--overwrite-env", action="store_true", help="timpa backend/.env yang sudah ada")
     parser.add_argument("--recreate-venv", action="store_true", help="hapus dan buat ulang .venv")
     parser.add_argument("--skip-models", action="store_true", help="jangan unduh model Ollama")
+    parser.add_argument("--skip-frontend", action="store_true", help="jangan pasang/build frontend")
     parser.add_argument("--skip-tests", action="store_true", help="jangan jalankan pytest")
     args = parser.parse_args()
 
@@ -224,9 +250,15 @@ def main() -> None:
     step_env(args.profile, args.overwrite_env)
     models = effective_models()
     step_models(models, args.skip_models)
+    step_frontend(args.skip_frontend)
     step_tests(args.skip_tests)
     report(args.profile, models)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except subprocess.CalledProcessError as error:
+        die(f"Perintah gagal (exit {error.returncode}). Perbaiki error di atas lalu ulangi setup.")
+    except KeyboardInterrupt:
+        raise SystemExit(130)

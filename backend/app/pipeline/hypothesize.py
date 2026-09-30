@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.pipeline.schema import ActionBucket
 
 CONTROL_CHANGE_KEYWORDS = [
@@ -23,8 +25,14 @@ GENERAL_ACTION_KEYWORDS = [
     "kerja sama strategis", "kerjasama strategis", "joint venture",
     "buyback", "buy back", "pembelian kembali saham", "tender offer",
     "divestasi", "kontrak baru", "penjualan aset", "restrukturisasi utang",
-    "stock split", "dividen",
+    "stock split", "dividen", "kontrak material", "material contract",
 ]
+
+# Judul formulir IDX "Acquisition or Lost of Material Contract" memakai kata acquisition untuk
+# memperoleh kontrak, bukan mengambil alih perusahaan. Frasa itu dibaca utuh sebelum kata kuncinya.
+CONTRACT_PHRASES = re.compile(
+    r"\b(?:acquisition|akuisisi|perolehan)\s+(?:or|atau)\s+(?:lost|loss|kehilangan)\s+(?:of\s+)?"
+    r"(?:material\s+contracts?|kontrak\s+material)", re.I)
 
 _BUCKET_KEYWORDS: list[tuple[ActionBucket, list[str]]] = [
     (ActionBucket.control_change, CONTROL_CHANGE_KEYWORDS),
@@ -35,7 +43,7 @@ _BUCKET_KEYWORDS: list[tuple[ActionBucket, list[str]]] = [
 
 
 def classify(title: str, body: str) -> tuple[ActionBucket | None, list[str]]:
-    text = f"{title or ''} {body or ''}".lower()
+    text = CONTRACT_PHRASES.sub(" material contract ", f"{title or ''} {body or ''}").lower()
     matched: list[str] = []
     top_bucket: ActionBucket | None = None
     for bucket, keywords in _BUCKET_KEYWORDS:
